@@ -455,11 +455,11 @@ public:
             for (int k = start; k < end; ++k) {
 
                 // remove to recover org Kernel switch
-                // if (k + 1 < end) {
-                //     _mm_prefetch((const char*)(val.data() + blk_ptr[k+1]), _MM_HINT_T0);
-                //     int next_col = col_ind[k+1];
-                //     _mm_prefetch((const char*)(x.data.data() + graph->block_offsets[next_col]), _MM_HINT_T0);
-                // }
+                if (k + 1 < end) {
+                    _mm_prefetch((const char*)(val.data() + blk_ptr[k+1]), _MM_HINT_T0);
+                    int next_col = col_ind[k+1];
+                    _mm_prefetch((const char*)(x.data.data() + graph->block_offsets[next_col]), _MM_HINT_T0);
+                }
                 // remove to recover org Kernel switch
 
                 int col = col_ind[k];
@@ -468,8 +468,8 @@ public:
                 const T* x_val = x.data.data() + graph->block_offsets[col]; // x.data includes ghosts
                 
                 // y_block += A_block * x_block
-                // SmartKernel<T>::gemv(r_dim, c_dim, T(1), block_val, r_dim, x_val, 1, T(1), y_val, 1);
-                Kernel::gemv(r_dim, c_dim, T(1), block_val, r_dim, x_val, 1, T(1), y_val, 1);
+                SmartKernel<T>::gemv(r_dim, c_dim, T(1), block_val, r_dim, x_val, 1, T(1), y_val, 1);
+                // Kernel::gemv(r_dim, c_dim, T(1), block_val, r_dim, x_val, 1, T(1), y_val, 1);
             }
         }
     }
@@ -494,11 +494,11 @@ public:
             
             bool first = true;
             for (int k = start; k < end; ++k) {
-                // if (k + 1 < end) {
-                //     _mm_prefetch((const char*)(val.data() + blk_ptr[k+1]), _MM_HINT_T0);
-                //     int next_col = col_ind[k+1];
-                //     _mm_prefetch((const char*)(&X(graph->block_offsets[next_col], 0)), _MM_HINT_T0);
-                // }
+                if (k + 1 < end) {
+                    _mm_prefetch((const char*)(val.data() + blk_ptr[k+1]), _MM_HINT_T0);
+                    int next_col = col_ind[k+1];
+                    _mm_prefetch((const char*)(&X(graph->block_offsets[next_col], 0)), _MM_HINT_T0);
+                }
                 int col = col_ind[k];
                 int c_dim = graph->block_sizes[col];
                 const T* block_val = val.data() + blk_ptr[k];
@@ -506,8 +506,8 @@ public:
                 int ldb = X.local_rows + X.ghost_rows;
                 
                 T beta = first ? T(0) : T(1);
-                // SmartKernel<T>::gemm(r_dim, num_vecs, c_dim, T(1), block_val, r_dim, x_ptr, ldb, beta, y_ptr, ldc);
-                Kernel::gemm(r_dim, num_vecs, c_dim, T(1), block_val, r_dim, x_ptr, ldb, beta, y_ptr, ldc);
+                SmartKernel<T>::gemm(r_dim, num_vecs, c_dim, T(1), block_val, r_dim, x_ptr, ldb, beta, y_ptr, ldc);
+                // Kernel::gemm(r_dim, num_vecs, c_dim, T(1), block_val, r_dim, x_ptr, ldb, beta, y_ptr, ldc);
                 first = false;
             }
             
@@ -554,15 +554,15 @@ public:
                     const T* block_val = val.data() + blk_ptr[k];
                     T* y_target = y_local.data() + graph->block_offsets[col];
                     
-                    // if (k + 1 < end) {
-                    //     _mm_prefetch((const char*)(val.data() + blk_ptr[k+1]), _MM_HINT_T0);
-                    //     int next_col = col_ind[k+1];
-                    //     _mm_prefetch((const char*)(y_local.data() + graph->block_offsets[next_col]), _MM_HINT_T0);
-                    // }
+                    if (k + 1 < end) {
+                        _mm_prefetch((const char*)(val.data() + blk_ptr[k+1]), _MM_HINT_T0);
+                        int next_col = col_ind[k+1];
+                        _mm_prefetch((const char*)(y_local.data() + graph->block_offsets[next_col]), _MM_HINT_T0);
+                    }
                     
                     // y_target += A_block^dagger * x_block
-                    // SmartKernel<T>::gemv_trans(r_dim, c_dim, T(1), block_val, r_dim, x_val, 1, T(1), y_target, 1);
-                    Kernel::gemv(r_dim, c_dim, T(1), block_val, r_dim, x_val, 1, T(1), y_target, 1, CblasConjTrans);
+                    SmartKernel<T>::gemv_trans(r_dim, c_dim, T(1), block_val, r_dim, x_val, 1, T(1), y_target, 1);
+                    // Kernel::gemv(r_dim, c_dim, T(1), block_val, r_dim, x_val, 1, T(1), y_target, 1, CblasConjTrans);
                 }
             }
             
@@ -612,14 +612,14 @@ public:
                     // X_block is r_dim x num_vecs.
                     // Y_target is c_dim x num_vecs.
                     
-                    // if (k + 1 < end) {
-                    //     _mm_prefetch((const char*)(val.data() + blk_ptr[k+1]), _MM_HINT_T0);
-                    //     int next_col = col_ind[k+1];
-                    //     _mm_prefetch((const char*)(Y_local.data() + graph->block_offsets[next_col]), _MM_HINT_T0);
-                    // }
+                    if (k + 1 < end) {
+                        _mm_prefetch((const char*)(val.data() + blk_ptr[k+1]), _MM_HINT_T0);
+                        int next_col = col_ind[k+1];
+                        _mm_prefetch((const char*)(Y_local.data() + graph->block_offsets[next_col]), _MM_HINT_T0);
+                    }
                     
-                    // SmartKernel<T>::gemm_trans(c_dim, num_vecs, r_dim, T(1), block_val, r_dim, x_ptr, ldb, T(1), y_target, ldc_local);
-                    Kernel::gemm(c_dim, num_vecs, r_dim, T(1), block_val, r_dim, x_ptr, ldb, T(1), y_target, ldc_local, CblasConjTrans, CblasNoTrans);
+                    SmartKernel<T>::gemm_trans(c_dim, num_vecs, r_dim, T(1), block_val, r_dim, x_ptr, ldb, T(1), y_target, ldc_local);
+                    // Kernel::gemm(c_dim, num_vecs, r_dim, T(1), block_val, r_dim, x_ptr, ldb, T(1), y_target, ldc_local, CblasConjTrans, CblasNoTrans);
                 }
             }
             
