@@ -100,6 +100,7 @@ template<typename T>
 void bind_block_spmat(py::module& m, const std::string& name) {
     py::class_<BlockSpMat<T>>(m, name.c_str())
         .def(py::init<DistGraph*>())
+        .def_readonly("graph", &BlockSpMat<T>::graph)
         .def("add_block", [](BlockSpMat<T>& mat, int g_row, int g_col, py::array_t<T> data, AssemblyMode mode) {
             py::buffer_info info = data.request();
             if (info.ndim != 2) throw std::runtime_error("Data must be 2D");
@@ -122,7 +123,11 @@ void bind_block_spmat(py::module& m, const std::string& name) {
         .def("add_diagonal", &BlockSpMat<T>::add_diagonal)
         .def("axpy", &BlockSpMat<T>::axpy)
         .def("duplicate", &BlockSpMat<T>::duplicate)
-        .def("save_matrix_market", &BlockSpMat<T>::save_matrix_market);
+        .def("save_matrix_market", &BlockSpMat<T>::save_matrix_market)
+        .def("spmm", &BlockSpMat<T>::spmm, py::arg("B"), py::arg("threshold"), py::arg("transA") = false, py::arg("transB") = false)
+        .def("spmm_self", &BlockSpMat<T>::spmm_self, py::arg("threshold"), py::arg("transA") = false)
+        .def("add", &BlockSpMat<T>::add, py::arg("B"), py::arg("alpha") = 1.0, py::arg("beta") = 1.0)
+        .def("transpose", &BlockSpMat<T>::transpose);
 }
 
 PYBIND11_MODULE(vbcsr_core, m) {

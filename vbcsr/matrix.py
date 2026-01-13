@@ -350,3 +350,51 @@ class VBCSR(LinearOperator):
 
     def __rmul__(self, other: Union[float, complex, int]) -> 'VBCSR':
         return self.__mul__(other)
+
+    def spmm(self, B: 'VBCSR', threshold: float = 0.0, transA: bool = False, transB: bool = False) -> 'VBCSR':
+        """
+        Sparse Matrix-Matrix Multiplication: C = op(A) * op(B).
+        
+        Args:
+            B (VBCSR): The matrix to multiply with.
+            threshold (float): Threshold for dropping small blocks.
+            transA (bool): If True, use A^H.
+            transB (bool): If True, use B^H.
+            
+        Returns:
+            VBCSR: The result matrix C.
+        """
+        if not isinstance(B, VBCSR):
+            raise TypeError("B must be a VBCSR matrix")
+        if self.dtype != B.dtype:
+            raise TypeError("A and B must have the same dtype")
+            
+        core_C = self._core.spmm(B._core, threshold, transA, transB)
+        
+        # Wrap result
+        obj = VBCSR.__new__(VBCSR)
+        obj.graph = core_C.graph
+        obj.dtype = self.dtype
+        obj._core = core_C
+        obj.shape = (None, None)
+        return obj
+
+    def spmm_self(self, threshold: float = 0.0, transA: bool = False) -> 'VBCSR':
+        core_C = self._core.spmm_self(threshold, transA)
+        obj = VBCSR.__new__(VBCSR)
+        obj.graph = core_C.graph
+        obj.dtype = self.dtype
+        obj._core = core_C
+        obj.shape = (None, None)
+        return obj
+
+    def add(self, B: 'VBCSR', alpha: float = 1.0, beta: float = 1.0) -> 'VBCSR':
+        if not isinstance(B, VBCSR):
+            raise TypeError("B must be a VBCSR matrix")
+        core_C = self._core.add(B._core, alpha, beta)
+        obj = VBCSR.__new__(VBCSR)
+        obj.graph = core_C.graph
+        obj.dtype = self.dtype
+        obj._core = core_C
+        obj.shape = self.shape
+        return obj
