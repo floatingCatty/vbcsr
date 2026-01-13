@@ -454,13 +454,6 @@ public:
         return false;
     }
 
-    // Legacy setter (defaults to INSERT)
-    void set_local_block(int local_row, int local_col, const T* data) {
-        if (!update_local_block(local_row, local_col, data, AssemblyMode::INSERT)) {
-            throw std::runtime_error("Block not found in graph structure");
-        }
-    }
-
     // Matrix-Vector Multiplication
     void mult(DistVector<T>& x, DistVector<T>& y) {
         mult_optimized(x, y);
@@ -1106,7 +1099,7 @@ public:
         }
     }
 
-private:
+public:
     struct GhostBlockRef { int col; const T* data; int c_dim; };
     using GhostBlockData = std::map<BlockID, std::vector<T>>;
     using GhostSizes = std::map<int, int>;
@@ -1124,28 +1117,29 @@ private:
         GhostMetadata metadata;
         int size = graph->size;
         int rank = graph->rank;
-
-        // 1. Identify needed ghost rows
+        
+        // 1. Identify needed rows of B (column indices of A)
         std::set<int> needed_rows;
         int n_rows = row_ptr.size() - 1;
         for (int i = 0; i < n_rows; ++i) {
             int start = row_ptr[i];
             int end = row_ptr[i+1];
             for (int k = start; k < end; ++k) {
-                int global_col = graph->get_global_index(col_ind[k]); // This is global row index in B
-                if (graph->find_owner(global_col) != rank) {
+                int global_col = graph->get_global_index(col_ind[k]);
+                if (B.graph->find_owner(global_col) != rank) {
                     needed_rows.insert(global_col);
                 }
             }
         }
 
-        // 2. Prepare requests
+        // 2. Count requests per rank
         std::vector<int> send_req_counts(size, 0);
         for (int global_row : needed_rows) {
-            send_req_counts[graph->find_owner(global_row)]++;
+            int owner = B.graph->find_owner(global_row);
+            send_req_counts[owner]++;
         }
 
-        // 3. Exchange counts and setup displacements
+        // 3. Exchange request counts
         std::vector<int> recv_req_counts(size);
         MPI_Alltoall(send_req_counts.data(), 1, MPI_INT, recv_req_counts.data(), 1, MPI_INT, graph->comm);
 
@@ -1159,7 +1153,7 @@ private:
         std::vector<int> send_req_buf(sdispls[size]);
         std::vector<int> current_req_counts(size, 0);
         for (int global_row : needed_rows) {
-            int owner = graph->find_owner(global_row);
+            int owner = B.graph->find_owner(global_row);
             send_req_buf[sdispls[owner] + current_req_counts[owner]++] = global_row;
         }
 
@@ -1176,8 +1170,8 @@ private:
             int* end = ptr + count;
             while(ptr < end) {
                 int global_row = *ptr++;
-                if (graph->global_to_local.count(global_row)) {
-                    int local_row = graph->global_to_local.at(global_row);
+                if (B.graph->global_to_local.count(global_row)) {
+                    int local_row = B.graph->global_to_local.at(global_row);
                     int n_blocks = B.row_ptr[local_row+1] - B.row_ptr[local_row];
                     send_reply_bytes[i] += 2 * sizeof(int) + n_blocks * (sizeof(int) + sizeof(double));
                 }
@@ -1203,8 +1197,8 @@ private:
             int* end = ptr + count;
             while(ptr < end) {
                 int global_row = *ptr++;
-                if (graph->global_to_local.count(global_row)) {
-                    int local_row = graph->global_to_local.at(global_row);
+                if (B.graph->global_to_local.count(global_row)) {
+                    int local_row = B.graph->global_to_local.at(global_row);
                     int start = B.row_ptr[local_row];
                     int end_row = B.row_ptr[local_row+1];
                     int n_blocks = end_row - start;
