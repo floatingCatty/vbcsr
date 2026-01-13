@@ -7,7 +7,7 @@
 #include <random>
 #include <algorithm>
 
-using namespace rsatb::backend;
+using namespace vbcsr;
 
 // Helper to fill vector with random numbers
 void fill_random(std::vector<double>& v, int seed) {

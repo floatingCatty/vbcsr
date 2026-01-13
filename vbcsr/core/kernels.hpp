@@ -1,5 +1,5 @@
-#ifndef RSATB_BACKEND_KERNELS_HPP
-#define RSATB_BACKEND_KERNELS_HPP
+#ifndef VBCSR_KERNELS_HPP
+#define VBCSR_KERNELS_HPP
 
 #include <complex>
 #include <vector>
@@ -8,18 +8,20 @@
 #include <omp.h>
 #endif
 
-#ifdef RSATB_USE_MKL
+#ifdef VBCSR_USE_MKL
 #include <mkl.h>
-#elif defined(RSATB_USE_OPENBLAS)
+#elif defined(VBCSR_USE_OPENBLAS) || defined(VBCSR_USE_BLAS)
 #include <cblas.h>
+#ifdef VBCSR_USE_OPENBLAS
 extern "C" void openblas_set_num_threads(int num_threads);
+#endif
 #endif
 
 // Forward declare CBLAS functions if needed or include header
 // For now, we assume a standard CBLAS interface is available via linking
 // or we provide a naive fallback.
 
-#if !defined(RSATB_USE_MKL) && !defined(RSATB_USE_OPENBLAS)
+#if !defined(VBCSR_USE_MKL) && !defined(VBCSR_USE_OPENBLAS) && !defined(VBCSR_USE_BLAS)
 extern "C" {
     // Basic BLAS signatures
     void cblas_dgemv(const int Order, const int TransA, const int M, const int N,
@@ -48,10 +50,9 @@ extern "C" {
 }
 #endif
 
-namespace rsatb {
-namespace backend {
+namespace vbcsr {
 
-#if !defined(RSATB_USE_MKL) && !defined(RSATB_USE_OPENBLAS)
+#if !defined(VBCSR_USE_MKL) && !defined(VBCSR_USE_OPENBLAS) && !defined(VBCSR_USE_BLAS)
 enum CBLAS_ORDER {CblasRowMajor=101, CblasColMajor=102};
 enum CBLAS_TRANSPOSE {CblasNoTrans=111, CblasTrans=112, CblasConjTrans=113};
 #endif
@@ -464,9 +465,9 @@ struct BLASKernel {
     }
 
     static void init_threading() {
-#ifdef RSATB_USE_MKL
+#ifdef VBCSR_USE_MKL
         mkl_set_num_threads(1);
-#elif defined(RSATB_USE_OPENBLAS)
+#elif defined(VBCSR_USE_OPENBLAS)
         openblas_set_num_threads(1);
 #else
         // Generic BLAS: Do nothing. 
@@ -476,9 +477,9 @@ struct BLASKernel {
     }
 
     static std::string name() {
-#ifdef RSATB_USE_MKL
+#ifdef VBCSR_USE_MKL
         return "Intel MKL";
-#elif defined(RSATB_USE_OPENBLAS)
+#elif defined(VBCSR_USE_OPENBLAS)
         return "OpenBLAS";
 #else
         return "Generic BLAS";
@@ -619,7 +620,6 @@ using DefaultKernel = BLASKernel;
 // Or NaiveKernel<T> if BLAS not available. 
 // Ideally controlled by macro.
 
-} // namespace backend
-} // namespace rsatb
+} // namespace vbcsr
 
 #endif

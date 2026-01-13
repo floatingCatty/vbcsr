@@ -1,5 +1,5 @@
-#ifndef RSATB_BACKEND_BLOCK_CSR_HPP
-#define RSATB_BACKEND_BLOCK_CSR_HPP
+#ifndef VBCSR_BLOCK_CSR_HPP
+#define VBCSR_BLOCK_CSR_HPP
 
 #include "dist_graph.hpp"
 #include "dist_vector.hpp"
@@ -13,8 +13,7 @@
 #include <complex>
 #include <type_traits>
 
-namespace rsatb {
-namespace backend {
+namespace vbcsr {
 
 enum class AssemblyMode {
     INSERT,
@@ -857,7 +856,6 @@ public:
     }
 };
 
-} // namespace backend
-} // namespace rsatb
+} // namespace vbcsr
 
 #endif

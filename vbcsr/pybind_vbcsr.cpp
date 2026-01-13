@@ -10,7 +10,7 @@
 #include "dist_multivector.hpp"
 
 namespace py = pybind11;
-using namespace rsatb::backend;
+using namespace vbcsr;
 
 // Helper to get MPI_Comm from python object (mpi4py)
 // For now, we assume the user passes an integer (MPI_Comm_c2f) or we use a capsule.

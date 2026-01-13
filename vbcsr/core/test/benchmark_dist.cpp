@@ -7,7 +7,7 @@
 #include <cmath>
 #include <algorithm>
 
-using namespace rsatb::backend;
+using namespace vbcsr;
 
 // Use BLAS Kernel for performance
 using Kernel = BLASKernel;

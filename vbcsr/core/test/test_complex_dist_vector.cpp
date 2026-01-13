@@ -4,7 +4,7 @@
 #include <complex>
 #include <cassert>
 
-using namespace rsatb::backend;
+using namespace vbcsr;
 
 int main(int argc, char** argv) {
     MPI_Init(&argc, &argv);

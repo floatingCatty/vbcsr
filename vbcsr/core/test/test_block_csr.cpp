@@ -3,8 +3,6 @@
 #include <cassert>
 #include <cmath>
 
-using namespace rsatb::backend;
-
 #include "block_csr.hpp"
 #include <iostream>
 #include <cassert>
@@ -12,7 +10,7 @@ using namespace rsatb::backend;
 #include <random>
 #include <algorithm>
 
-using namespace rsatb::backend;
+using namespace vbcsr;
 
 // Helper to fill vector with random numbers
 void fill_random(std::vector<double>& v, int seed) {

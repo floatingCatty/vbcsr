@@ -1,5 +1,5 @@
-#ifndef RSATB_BACKEND_DIST_MULTIVECTOR_HPP
-#define RSATB_BACKEND_DIST_MULTIVECTOR_HPP
+#ifndef VBCSR_DIST_MULTIVECTOR_HPP
+#define VBCSR_DIST_MULTIVECTOR_HPP
 
 #include "dist_graph.hpp"
 #include <vector>
@@ -11,8 +11,7 @@
 #include <complex>
 #include "scalar_traits.hpp"
 
-namespace rsatb {
-namespace backend {
+namespace vbcsr {
 
 template <typename T>
 class DistMultiVector {
@@ -389,7 +388,6 @@ template <> inline MPI_Datatype DistMultiVector<float>::get_mpi_type() const { r
 template <> inline MPI_Datatype DistMultiVector<int>::get_mpi_type() const { return MPI_INT; }
 template <> inline MPI_Datatype DistMultiVector<std::complex<double>>::get_mpi_type() const { return MPI_CXX_DOUBLE_COMPLEX; }
 
-} // namespace backend
-} // namespace rsatb
+} // namespace vbcsr
 
 #endif

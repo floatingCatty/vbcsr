@@ -7,7 +7,7 @@
 #include <algorithm>
 #include <iomanip>
 
-using namespace rsatb::backend;
+using namespace vbcsr;
 
 // Use SmartKernel to test the optimized path
 using Kernel = SmartKernel<double>;

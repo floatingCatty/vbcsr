@@ -1,5 +1,5 @@
-#ifndef RSATB_BACKEND_DIST_GRAPH_HPP
-#define RSATB_BACKEND_DIST_GRAPH_HPP
+#ifndef VBCSR_DIST_GRAPH_HPP
+#define VBCSR_DIST_GRAPH_HPP
 
 #include <mpi.h>
 #include <vector>
@@ -9,8 +9,7 @@
 #include <iostream>
 #include <stdexcept>
 
-namespace rsatb {
-namespace backend {
+namespace vbcsr {
 
 class DistGraph {
 public:
@@ -595,7 +594,6 @@ private:
     }
 };
 
-} // namespace backend
-} // namespace rsatb
+} // namespace vbcsr
 
 #endif

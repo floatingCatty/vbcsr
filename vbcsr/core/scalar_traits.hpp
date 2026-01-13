@@ -1,5 +1,5 @@
-#ifndef RSATB_BACKEND_SCALAR_TRAITS_HPP
-#define RSATB_BACKEND_SCALAR_TRAITS_HPP
+#ifndef VBCSR_SCALAR_TRAITS_HPP
+#define VBCSR_SCALAR_TRAITS_HPP
 
 #include <complex>
 
@@ -8,8 +8,7 @@
 #pragma omp declare reduction(+: std::complex<double>: omp_out += omp_in) initializer(omp_priv = std::complex<double>(0, 0))
 #endif
 
-namespace rsatb {
-namespace backend {
+namespace vbcsr {
 
 template <typename T>
 struct ScalarTraits {
@@ -23,7 +22,6 @@ struct ScalarTraits<std::complex<T>> {
     static std::complex<T> conjugate(const std::complex<T>& v) { return std::conj(v); }
 };
 
-} // namespace backend
-} // namespace rsatb
+} // namespace vbcsr
 
 #endif

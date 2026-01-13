@@ -1,5 +1,5 @@
-#ifndef RSATB_BACKEND_DIST_VECTOR_HPP
-#define RSATB_BACKEND_DIST_VECTOR_HPP
+#ifndef VBCSR_DIST_VECTOR_HPP
+#define VBCSR_DIST_VECTOR_HPP
 
 #include "dist_graph.hpp"
 #include <vector>
@@ -15,8 +15,7 @@
 #include <omp.h>
 #endif
 
-namespace rsatb {
-namespace backend {
+namespace vbcsr {
 
 template <typename T>
 class DistVector {
@@ -254,7 +253,6 @@ template <> inline MPI_Datatype DistVector<std::complex<double>>::get_mpi_type()
 // Complex types need handling, assuming std::complex layout matches C struct
 // For simplicity, let's assume double for now or add complex support.
 
-} // namespace backend
-} // namespace rsatb
+} // namespace vbcsr
 
 #endif

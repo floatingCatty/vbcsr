@@ -7,7 +7,7 @@
 #include <fstream>
 #include <complex>
 
-using namespace rsatb::backend;
+using namespace vbcsr;
 
 TEST(BlockCSRTest, ExportMatrixMarketReal) {
     int rank, size;
