@@ -6,8 +6,8 @@
 #include <algorithm>
 #include <random>
 #include <complex>
-#include "block_csr.hpp"
-#include "kernels.hpp"
+#include "../block_csr.hpp"
+#include "../kernels.hpp"
 
 using namespace vbcsr;
 

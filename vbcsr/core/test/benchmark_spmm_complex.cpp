@@ -1,4 +1,4 @@
-#include "block_csr.hpp"
+#include "../block_csr.hpp"
 #include <iostream>
 #include <chrono>
 #include <random>
@@ -69,7 +69,7 @@ int main(int argc, char** argv) {
 
     if(rank == 0) std::cout << "Starting SpMM Benchmark (Complex, 2000x2000 blocks, 200 blocks/row)..." << std::endl;
 
-    double threshold = 1e-10;
+    double threshold = 3e3;
     
     // e. profiling
     MPI_Barrier(MPI_COMM_WORLD);
