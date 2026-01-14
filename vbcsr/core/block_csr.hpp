@@ -712,15 +712,323 @@ public:
         norms_valid = false;
     }
 
-    void axpy(T alpha, const BlockSpMat<T, Kernel>& other) {
-        if (val.size() != other.val.size()) {
-            throw std::runtime_error("Matrix structure mismatch in axpy");
+    void axpby(T alpha, const BlockSpMat<T, Kernel>& X, T beta) {
+        // Optimization Checks
+        if (alpha == T(0)) {
+            this->scale(beta);
+            return;
         }
+        if (beta == T(0)) {
+            if (this->graph == X.graph) {
+                // Same graph, just copy values and scale
+                if (this->val.size() != X.val.size()) {
+                     throw std::runtime_error("Matrix structure mismatch in axpby (beta=0, same graph)");
+                }
+                #pragma omp parallel for
+                for (size_t i = 0; i < this->val.size(); ++i) {
+                    this->val[i] = alpha * X.val[i];
+                }
+                this->norms_valid = false;
+                return;
+            } else {
+                 // Check if structures are identical
+                 // std::vector::operator== checks for element-wise equality (deep comparison)
+                 bool same_structure = (this->row_ptr == X.row_ptr && this->col_ind == X.col_ind);
+                 if (same_structure) {
+                     // If structure (topology) is same but graphs differ, block sizes might differ.
+                     // If block sizes differ, val.size() will differ.
+                     // We cannot simply resize because it implies incompatible matrix algebra.
+                     if (this->val.size() != X.val.size()) {
+                         throw std::runtime_error("Matrix dimension mismatch in axpby (same topology but different block sizes)");
+                     }
+                     #pragma omp parallel for
+                     for (size_t i = 0; i < this->val.size(); ++i) {
+                         this->val[i] = alpha * X.val[i];
+                     }
+                     this->norms_valid = false;
+                     return;
+                 } else {
+                     // Reallocation Required
+                     *this = X.duplicate(); // Deep copy
+                     this->scale(alpha);
+                     return;
+                 }
+            }
+        }
+        
+        if (this == &X) {
+            this->scale(alpha + beta);
+            return;
+        }
+
+        // Structure Comparison & Execution
+        
+        // Step 1: Fast Path (Same Object/Graph)
+        bool same_graph = (this->graph == X.graph);
+        bool same_structure = false;
+        if (same_graph) {
+             if (this->row_ptr.size() == X.row_ptr.size() && this->col_ind.size() == X.col_ind.size()) {
+                 if (this->row_ptr == X.row_ptr && this->col_ind == X.col_ind) {
+                     same_structure = true;
+                 }
+             }
+        } else {
+             if (this->row_ptr == X.row_ptr && this->col_ind == X.col_ind) {
+                 same_structure = true;
+             }
+        }
+
+        if (same_structure) {
+            if (this->val.size() != X.val.size()) {
+                throw std::runtime_error("Matrix structure mismatch in axpby (same structure check passed)");
+            }
+            #pragma omp parallel for
+            for (size_t i = 0; i < this->val.size(); ++i) {
+                this->val[i] = alpha * X.val[i] + beta * this->val[i];
+            }
+            this->norms_valid = false;
+            return;
+        }
+
+        // Step 2: Symbolic Analysis
+        int n_rows = this->row_ptr.size() - 1;
+        if (X.row_ptr.size() - 1 != n_rows) {
+            throw std::runtime_error("Matrix row count mismatch in axpby");
+        }
+
+        size_t y_nnz = this->col_ind.size();
+        size_t x_nnz = X.col_ind.size();
+        
+        bool x_subset_y = true;
+        
+        if (x_nnz > y_nnz) x_subset_y = false;
+        
+        if (x_subset_y) {
+             #pragma omp parallel for reduction(&&:x_subset_y)
+             for (int i = 0; i < n_rows; ++i) {
+                 if (!x_subset_y) continue;
+                 int y_start = this->row_ptr[i];
+                 int y_end = this->row_ptr[i+1];
+                 int x_start = X.row_ptr[i];
+                 int x_end = X.row_ptr[i+1];
+                 
+                 int y_k = y_start;
+                 for (int x_k = x_start; x_k < x_end; ++x_k) {
+                     int col = X.col_ind[x_k];
+                     while (y_k < y_end && this->col_ind[y_k] < col) {
+                         y_k++;
+                     }
+                     if (y_k == y_end || this->col_ind[y_k] != col) {
+                         x_subset_y = false;
+                         break;
+                     }
+                 }
+             }
+        }
+        
+        if (x_subset_y) {
+            // Path A: X is Subgraph of Y
+            this->scale(beta);
+            
+            #pragma omp parallel for
+            for (int i = 0; i < n_rows; ++i) {
+                int y_start = this->row_ptr[i];
+                int y_end = this->row_ptr[i+1];
+                int x_start = X.row_ptr[i];
+                int x_end = X.row_ptr[i+1];
+                
+                int y_k = y_start;
+                for (int x_k = x_start; x_k < x_end; ++x_k) {
+                    int col = X.col_ind[x_k];
+                    while (y_k < y_end && this->col_ind[y_k] < col) {
+                        y_k++;
+                    }
+                    size_t y_offset = this->blk_ptr[y_k];
+                    size_t x_offset = X.blk_ptr[x_k];
+                    int r_dim = this->graph->block_sizes[i];
+                    int c_dim = this->graph->block_sizes[col];
+                    int size = r_dim * c_dim;
+                    
+                    for (int j = 0; j < size; ++j) {
+                        this->val[y_offset + j] += alpha * X.val[x_offset + j];
+                    }
+                }
+            }
+            this->norms_valid = false;
+            return;
+        }
+        
+        // Path C: General Case (Union)
+        std::vector<int> new_row_ptr(n_rows + 1);
+        new_row_ptr[0] = 0;
+        std::vector<int> new_col_ind;
+        std::vector<size_t> new_blk_ptr;
+        new_blk_ptr.push_back(0);
+        std::vector<T> new_val;
+        
+        std::vector<int> row_nnz(n_rows);
+        
         #pragma omp parallel for
-        for (size_t i = 0; i < val.size(); ++i) {
-            val[i] += alpha * other.val[i];
+        for (int i = 0; i < n_rows; ++i) {
+            int y_start = this->row_ptr[i];
+            int y_end = this->row_ptr[i+1];
+            int x_start = X.row_ptr[i];
+            int x_end = X.row_ptr[i+1];
+            
+            int count = 0;
+            int y_k = y_start;
+            int x_k = x_start;
+            
+            while (y_k < y_end && x_k < x_end) {
+                int y_col = this->col_ind[y_k];
+                int x_col = X.col_ind[x_k];
+                if (y_col < x_col) {
+                    count++; y_k++;
+                } else if (x_col < y_col) {
+                    count++; x_k++;
+                } else {
+                    count++; y_k++; x_k++;
+                }
+            }
+            count += (y_end - y_k) + (x_end - x_k);
+            row_nnz[i] = count;
         }
-        norms_valid = false;
+        
+        for (int i = 0; i < n_rows; ++i) {
+            new_row_ptr[i+1] = new_row_ptr[i] + row_nnz[i];
+        }
+        
+        int total_blocks = new_row_ptr[n_rows];
+        new_col_ind.resize(total_blocks);
+        new_blk_ptr.resize(total_blocks + 1);
+        
+        std::vector<size_t> row_val_size(n_rows);
+        
+        #pragma omp parallel for
+        for (int i = 0; i < n_rows; ++i) {
+            int y_start = this->row_ptr[i];
+            int y_end = this->row_ptr[i+1];
+            int x_start = X.row_ptr[i];
+            int x_end = X.row_ptr[i+1];
+            
+            size_t val_count = 0;
+            int y_k = y_start;
+            int x_k = x_start;
+            int r_dim = this->graph->block_sizes[i];
+            
+            while (y_k < y_end && x_k < x_end) {
+                int y_col = this->col_ind[y_k];
+                int x_col = X.col_ind[x_k];
+                int col;
+                if (y_col < x_col) {
+                    col = y_col; y_k++;
+                } else if (x_col < y_col) {
+                    col = x_col; x_k++;
+                } else {
+                    col = y_col; y_k++; x_k++;
+                }
+                int c_dim = this->graph->block_sizes[col];
+                val_count += r_dim * c_dim;
+            }
+            while (y_k < y_end) {
+                int col = this->col_ind[y_k++];
+                int c_dim = this->graph->block_sizes[col];
+                val_count += r_dim * c_dim;
+            }
+            while (x_k < x_end) {
+                int col = X.col_ind[x_k++];
+                int c_dim = this->graph->block_sizes[col];
+                val_count += r_dim * c_dim;
+            }
+            row_val_size[i] = val_count;
+        }
+        
+        std::vector<size_t> row_val_offset(n_rows + 1);
+        row_val_offset[0] = 0;
+        for (int i = 0; i < n_rows; ++i) {
+            row_val_offset[i+1] = row_val_offset[i] + row_val_size[i];
+        }
+        
+        new_val.resize(row_val_offset[n_rows]);
+        
+        #pragma omp parallel for
+        for (int i = 0; i < n_rows; ++i) {
+            int y_start = this->row_ptr[i];
+            int y_end = this->row_ptr[i+1];
+            int x_start = X.row_ptr[i];
+            int x_end = X.row_ptr[i+1];
+            
+            int dest_idx = new_row_ptr[i];
+            size_t dest_val_offset = row_val_offset[i];
+            
+            int y_k = y_start;
+            int x_k = x_start;
+            int r_dim = this->graph->block_sizes[i];
+            
+            while (y_k < y_end || x_k < x_end) {
+                int col = -1;
+                bool use_y = false;
+                bool use_x = false;
+                
+                if (y_k < y_end && x_k < x_end) {
+                    if (this->col_ind[y_k] < X.col_ind[x_k]) {
+                        col = this->col_ind[y_k]; use_y = true;
+                    } else if (X.col_ind[x_k] < this->col_ind[y_k]) {
+                        col = X.col_ind[x_k]; use_x = true;
+                    } else {
+                        col = this->col_ind[y_k]; use_y = true; use_x = true;
+                    }
+                } else if (y_k < y_end) {
+                    col = this->col_ind[y_k]; use_y = true;
+                } else {
+                    col = X.col_ind[x_k]; use_x = true;
+                }
+                
+                int c_dim = this->graph->block_sizes[col];
+                size_t blk_sz = r_dim * c_dim;
+                
+                new_col_ind[dest_idx] = col;
+                new_blk_ptr[dest_idx] = dest_val_offset;
+                
+                T* dest_ptr = new_val.data() + dest_val_offset;
+                
+                if (use_y && use_x) {
+                    const T* y_ptr = this->val.data() + this->blk_ptr[y_k];
+                    const T* x_ptr = X.val.data() + X.blk_ptr[x_k];
+                    for(size_t j=0; j<blk_sz; ++j) dest_ptr[j] = alpha * x_ptr[j] + beta * y_ptr[j];
+                    y_k++; x_k++;
+                } else if (use_y) {
+                    const T* y_ptr = this->val.data() + this->blk_ptr[y_k];
+                    for(size_t j=0; j<blk_sz; ++j) dest_ptr[j] = beta * y_ptr[j];
+                    y_k++;
+                } else {
+                    const T* x_ptr = X.val.data() + X.blk_ptr[x_k];
+                    for(size_t j=0; j<blk_sz; ++j) dest_ptr[j] = alpha * x_ptr[j];
+                    x_k++;
+                }
+                
+                dest_idx++;
+                dest_val_offset += blk_sz;
+            }
+        }
+        new_blk_ptr[total_blocks] = new_val.size();
+        
+        this->row_ptr = std::move(new_row_ptr);
+        this->col_ind = std::move(new_col_ind);
+        this->val = std::move(new_val);
+        this->blk_ptr = std::move(new_blk_ptr);
+        this->norms_valid = false;
+        
+        if (!this->owns_graph) {
+            this->graph = this->graph->duplicate();
+            this->owns_graph = true;
+        }
+        this->graph->adj_ptr = this->row_ptr;
+        this->graph->adj_ind = this->col_ind;
+    }
+
+    void axpy(T alpha, const BlockSpMat<T, Kernel>& other) {
+        axpby(alpha, other, T(1));
     }
 
     // Add alpha to diagonal elements
