@@ -5,6 +5,7 @@
 #include "dist_vector.hpp"
 #include "dist_multivector.hpp"
 #include "kernels.hpp"
+#include "mpi_utils.hpp"
 #include <xmmintrin.h>
 #include <vector>
 #include <omp.h>
@@ -311,21 +312,21 @@ public:
         int size = graph->size;
         
         // 1. Counting pass
-        std::vector<int> send_counts(size, 0);
+        std::vector<size_t> send_counts(size, 0);
         for (const auto& kv : remote_blocks) {
             int target = kv.first;
             size_t bytes = 0;
             for (const auto& inner_kv : kv.second) {
                 bytes += 5 * sizeof(int) + inner_kv.second.data.size() * sizeof(T);
             }
-            send_counts[target] = static_cast<int>(bytes);
+            send_counts[target] = bytes;
         }
         
         // 2. Exchange counts and setup displacements
-        std::vector<int> recv_counts(size);
-        MPI_Alltoall(send_counts.data(), 1, MPI_INT, recv_counts.data(), 1, MPI_INT, graph->comm);
+        std::vector<size_t> recv_counts(size);
+        MPI_Alltoall(send_counts.data(), sizeof(size_t), MPI_BYTE, recv_counts.data(), sizeof(size_t), MPI_BYTE, graph->comm);
         
-        std::vector<int> sdispls(size + 1, 0), rdispls(size + 1, 0);
+        std::vector<size_t> sdispls(size + 1, 0), rdispls(size + 1, 0);
         for(int i=0; i<size; ++i) {
             sdispls[i+1] = sdispls[i] + send_counts[i];
             rdispls[i+1] = rdispls[i] + recv_counts[i];
@@ -352,8 +353,8 @@ public:
         
         // 4. Exchange data
         std::vector<char> recv_blob(rdispls[size]);
-        MPI_Alltoallv(send_blob.data(), send_counts.data(), sdispls.data(), MPI_BYTE,
-                      recv_blob.data(), recv_counts.data(), rdispls.data(), MPI_BYTE, graph->comm);
+        safe_alltoallv(send_blob.data(), send_counts, sdispls, MPI_BYTE,
+                       recv_blob.data(), recv_counts, rdispls, MPI_BYTE, graph->comm);
                   
         // 5. Process received
         for(int i=0; i<size; ++i) {
