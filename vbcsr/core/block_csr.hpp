@@ -743,12 +743,9 @@ public:
                 return;
             } else {
                  // Check if structures are identical
-                 // std::vector::operator== checks for element-wise equality (deep comparison)
                  bool same_structure = (this->row_ptr == X.row_ptr && this->col_ind == X.col_ind);
                  if (same_structure) {
                      // If structure (topology) is same but graphs differ, block sizes might differ.
-                     // If block sizes differ, val.size() will differ.
-                     // We cannot simply resize because it implies incompatible matrix algebra.
                      if (this->val.size() != X.val.size()) {
                          throw std::runtime_error("Matrix dimension mismatch in axpby (same topology but different block sizes)");
                      }
@@ -785,7 +782,11 @@ public:
              }
         } else {
              if (this->row_ptr == X.row_ptr && this->col_ind == X.col_ind) {
-                 same_structure = true;
+                 // Even if structure is same, we must ensure the mapping is same.
+                 // If graphs differ, local index 'c' might mean different global columns.
+                 // So we CANNOT assume same_structure implies safe to merge unless we verify mapping.
+                 // To be safe:
+                 same_structure = false; 
              }
         }
 
@@ -801,23 +802,51 @@ public:
             return;
         }
 
-        // Step 2: Symbolic Analysis
+        // Step 2: Robust Merge with Global Indices
         int n_rows = this->row_ptr.size() - 1;
         if (X.row_ptr.size() - 1 != n_rows) {
             throw std::runtime_error("Matrix row count mismatch in axpby");
         }
 
-        size_t y_nnz = this->col_ind.size();
-        size_t x_nnz = X.col_ind.size();
+        // Build Translation Table: X_local -> this_local
+        // If X has a column that this doesn't have, map to -1.
+        int x_n_owned = X.graph->owned_global_indices.size();
+        int x_n_ghost = X.graph->ghost_global_indices.size();
+        int x_total_cols = x_n_owned + x_n_ghost;
         
-        bool x_subset_y = true;
+        std::vector<int> x_to_this(x_total_cols, -1);
+        bool x_is_subset = true;
         
-        if (x_nnz > y_nnz) x_subset_y = false;
+        // Owned
+        for(int i=0; i<x_n_owned; ++i) {
+            int gid = X.graph->owned_global_indices[i];
+            if (this->graph->global_to_local.count(gid)) {
+                x_to_this[i] = this->graph->global_to_local.at(gid);
+            } else {
+                x_is_subset = false;
+            }
+        }
+        // Ghost
+        for(int i=0; i<x_n_ghost; ++i) {
+            int gid = X.graph->ghost_global_indices[i];
+            if (this->graph->global_to_local.count(gid)) {
+                x_to_this[x_n_owned + i] = this->graph->global_to_local.at(gid);
+            } else {
+                x_is_subset = false;
+            }
+        }
         
-        if (x_subset_y) {
-             #pragma omp parallel for reduction(&&:x_subset_y)
+        int local_subset = x_is_subset ? 1 : 0;
+        int global_subset = 0;
+        MPI_Allreduce(&local_subset, &global_subset, 1, MPI_INT, MPI_MIN, this->graph->comm);
+        x_is_subset = (global_subset == 1);
+        
+        if (x_is_subset) {
+            // Check sparsity subset
+            bool sparsity_subset = true;
+             #pragma omp parallel for reduction(&&:sparsity_subset)
              for (int i = 0; i < n_rows; ++i) {
-                 if (!x_subset_y) continue;
+                 if (!sparsity_subset) continue;
                  int y_start = this->row_ptr[i];
                  int y_end = this->row_ptr[i+1];
                  int x_start = X.row_ptr[i];
@@ -825,59 +854,63 @@ public:
                  
                  int y_k = y_start;
                  for (int x_k = x_start; x_k < x_end; ++x_k) {
-                     int col = X.col_ind[x_k];
-                     while (y_k < y_end && this->col_ind[y_k] < col) {
+                     int x_col_local = X.col_ind[x_k];
+                     int target_col = x_to_this[x_col_local];
+                     
+                     while (y_k < y_end && this->col_ind[y_k] < target_col) {
                          y_k++;
                      }
-                     if (y_k == y_end || this->col_ind[y_k] != col) {
-                         x_subset_y = false;
+                     if (y_k == y_end || this->col_ind[y_k] != target_col) {
+                         sparsity_subset = false;
                          break;
                      }
                  }
              }
-        }
-        
-        if (x_subset_y) {
-            // Path A: X is Subgraph of Y
-            this->scale(beta);
-            
-            #pragma omp parallel for
-            for (int i = 0; i < n_rows; ++i) {
-                int y_start = this->row_ptr[i];
-                int y_end = this->row_ptr[i+1];
-                int x_start = X.row_ptr[i];
-                int x_end = X.row_ptr[i+1];
-                
-                int y_k = y_start;
-                for (int x_k = x_start; x_k < x_end; ++x_k) {
-                    int col = X.col_ind[x_k];
-                    while (y_k < y_end && this->col_ind[y_k] < col) {
-                        y_k++;
-                    }
-                    size_t y_offset = this->blk_ptr[y_k];
-                    size_t x_offset = X.blk_ptr[x_k];
-                    int r_dim = this->graph->block_sizes[i];
-                    int c_dim = this->graph->block_sizes[col];
-                    int size = r_dim * c_dim;
-                    
-                    for (int j = 0; j < size; ++j) {
-                        this->val[y_offset + j] += alpha * X.val[x_offset + j];
-                    }
-                }
-            }
-            this->norms_valid = false;
-            return;
+             
+             if (sparsity_subset) {
+                 // Safe to proceed with in-place addition
+                 this->scale(beta);
+                 #pragma omp parallel for
+                 for (int i = 0; i < n_rows; ++i) {
+                     int y_start = this->row_ptr[i];
+                     int y_end = this->row_ptr[i+1];
+                     int x_start = X.row_ptr[i];
+                     int x_end = X.row_ptr[i+1];
+                     
+                     int y_k = y_start;
+                     for (int x_k = x_start; x_k < x_end; ++x_k) {
+                         int x_col_local = X.col_ind[x_k];
+                         int target_col = x_to_this[x_col_local];
+                         
+                         while (y_k < y_end && this->col_ind[y_k] < target_col) {
+                             y_k++;
+                         }
+                         // Guaranteed found
+                         size_t y_offset = this->blk_ptr[y_k];
+                         size_t x_offset = X.blk_ptr[x_k];
+                         int r_dim = this->graph->block_sizes[i];
+                         int c_dim = this->graph->block_sizes[target_col];
+                         int size = r_dim * c_dim;
+                         
+                         for (int j = 0; j < size; ++j) {
+                             this->val[y_offset + j] += alpha * X.val[x_offset + j];
+                         }
+                     }
+                 }
+                 this->norms_valid = false;
+                 return;
+             }
         }
         
         // Path C: General Case (Union)
+        // We need to merge using GLOBAL indices to ensure correctness.
+        
+        // 1. Collect all global columns for each row
         std::vector<int> new_row_ptr(n_rows + 1);
         new_row_ptr[0] = 0;
-        std::vector<int> new_col_ind;
-        std::vector<size_t> new_blk_ptr;
-        new_blk_ptr.push_back(0);
-        std::vector<T> new_val;
         
         std::vector<int> row_nnz(n_rows);
+        std::vector<T> new_val;
         
         #pragma omp parallel for
         for (int i = 0; i < n_rows; ++i) {
@@ -890,12 +923,16 @@ public:
             int y_k = y_start;
             int x_k = x_start;
             
+            // We need to compare GLOBAL indices
             while (y_k < y_end && x_k < x_end) {
-                int y_col = this->col_ind[y_k];
-                int x_col = X.col_ind[x_k];
-                if (y_col < x_col) {
+                int y_col_local = this->col_ind[y_k];
+                int x_col_local = X.col_ind[x_k];
+                int y_col_global = this->graph->get_global_index(y_col_local);
+                int x_col_global = X.graph->get_global_index(x_col_local);
+                
+                if (y_col_global < x_col_global) {
                     count++; y_k++;
-                } else if (x_col < y_col) {
+                } else if (x_col_global < y_col_global) {
                     count++; x_k++;
                 } else {
                     count++; y_k++; x_k++;
@@ -909,58 +946,88 @@ public:
             new_row_ptr[i+1] = new_row_ptr[i] + row_nnz[i];
         }
         
-        int total_blocks = new_row_ptr[n_rows];
-        new_col_ind.resize(total_blocks);
-        new_blk_ptr.resize(total_blocks + 1);
-        
-        std::vector<size_t> row_val_size(n_rows);
+        // 2. Construct new graph structure (Adjacency)
+        std::vector<std::vector<int>> new_adj(n_rows);
         
         #pragma omp parallel for
         for (int i = 0; i < n_rows; ++i) {
+            new_adj[i].reserve(row_nnz[i]);
             int y_start = this->row_ptr[i];
             int y_end = this->row_ptr[i+1];
             int x_start = X.row_ptr[i];
             int x_end = X.row_ptr[i+1];
             
-            size_t val_count = 0;
             int y_k = y_start;
             int x_k = x_start;
-            int r_dim = this->graph->block_sizes[i];
             
             while (y_k < y_end && x_k < x_end) {
-                int y_col = this->col_ind[y_k];
-                int x_col = X.col_ind[x_k];
-                int col;
-                if (y_col < x_col) {
-                    col = y_col; y_k++;
-                } else if (x_col < y_col) {
-                    col = x_col; x_k++;
+                int y_col_global = this->graph->get_global_index(this->col_ind[y_k]);
+                int x_col_global = X.graph->get_global_index(X.col_ind[x_k]);
+                
+                if (y_col_global < x_col_global) {
+                    new_adj[i].push_back(y_col_global); y_k++;
+                } else if (x_col_global < y_col_global) {
+                    new_adj[i].push_back(x_col_global); x_k++;
                 } else {
-                    col = y_col; y_k++; x_k++;
+                    new_adj[i].push_back(y_col_global); y_k++; x_k++;
                 }
-                int c_dim = this->graph->block_sizes[col];
-                val_count += r_dim * c_dim;
             }
             while (y_k < y_end) {
-                int col = this->col_ind[y_k++];
-                int c_dim = this->graph->block_sizes[col];
-                val_count += r_dim * c_dim;
+                new_adj[i].push_back(this->graph->get_global_index(this->col_ind[y_k++]));
             }
             while (x_k < x_end) {
-                int col = X.col_ind[x_k++];
-                int c_dim = this->graph->block_sizes[col];
-                val_count += r_dim * c_dim;
+                new_adj[i].push_back(X.graph->get_global_index(X.col_ind[x_k++]));
             }
-            row_val_size[i] = val_count;
         }
         
-        std::vector<size_t> row_val_offset(n_rows + 1);
-        row_val_offset[0] = 0;
+        // 3. Create New Graph
+        DistGraph* new_graph = new DistGraph(this->graph->comm);
+        new_graph->construct_distributed(this->graph->owned_global_indices, this->graph->block_sizes, new_adj);
+        
+        // 4. Populate Values
+        std::vector<int> new_col_ind;
+        new_graph->get_matrix_structure(new_row_ptr, new_col_ind);
+        
+        int total_blocks_new = new_col_ind.size();
+        std::vector<size_t> new_blk_ptr(total_blocks_new + 1);
+        new_blk_ptr[0] = 0;
+        
+        std::vector<size_t> row_val_size_new(n_rows);
+        
+        #pragma omp parallel for
         for (int i = 0; i < n_rows; ++i) {
-            row_val_offset[i+1] = row_val_offset[i] + row_val_size[i];
+            int start = new_row_ptr[i];
+            int end = new_row_ptr[i+1];
+            size_t sz = 0;
+            int r_dim = new_graph->block_sizes[i];
+            for(int k=start; k<end; ++k) {
+                int col = new_col_ind[k];
+                int c_dim = new_graph->block_sizes[col];
+                sz += r_dim * c_dim;
+            }
+            row_val_size_new[i] = sz;
         }
         
-        new_val.resize(row_val_offset[n_rows]);
+        std::vector<size_t> row_val_offset_new(n_rows + 1);
+        row_val_offset_new[0] = 0;
+        for(int i=0; i<n_rows; ++i) row_val_offset_new[i+1] = row_val_offset_new[i] + row_val_size_new[i];
+        
+        #pragma omp parallel for
+        for (int i = 0; i < n_rows; ++i) {
+            int start = new_row_ptr[i];
+            int end = new_row_ptr[i+1];
+            size_t offset = row_val_offset_new[i];
+            int r_dim = new_graph->block_sizes[i];
+            for(int k=start; k<end; ++k) {
+                new_blk_ptr[k] = offset;
+                int col = new_col_ind[k];
+                int c_dim = new_graph->block_sizes[col];
+                offset += r_dim * c_dim;
+            }
+        }
+        new_blk_ptr[total_blocks_new] = row_val_offset_new[n_rows];
+        
+        new_val.resize(new_blk_ptr[total_blocks_new]);
         
         #pragma omp parallel for
         for (int i = 0; i < n_rows; ++i) {
@@ -969,36 +1036,64 @@ public:
             int x_start = X.row_ptr[i];
             int x_end = X.row_ptr[i+1];
             
-            int dest_idx = new_row_ptr[i];
-            size_t dest_val_offset = row_val_offset[i];
+            int dest_start = new_row_ptr[i];
             
             int y_k = y_start;
             int x_k = x_start;
-            int r_dim = this->graph->block_sizes[i];
+            int dest_k = dest_start;
+            int dest_idx = new_row_ptr[i];
+            size_t dest_val_offset = row_val_offset_new[i];
+            int r_dim = new_graph->block_sizes[i];
             
             while (y_k < y_end || x_k < x_end) {
-                int col = -1;
+                int col_local = -1;
                 bool use_y = false;
                 bool use_x = false;
                 
                 if (y_k < y_end && x_k < x_end) {
-                    if (this->col_ind[y_k] < X.col_ind[x_k]) {
-                        col = this->col_ind[y_k]; use_y = true;
-                    } else if (X.col_ind[x_k] < this->col_ind[y_k]) {
-                        col = X.col_ind[x_k]; use_x = true;
+                    int y_col_global = this->graph->get_global_index(this->col_ind[y_k]);
+                    int x_col_global = X.graph->get_global_index(X.col_ind[x_k]);
+                    
+                    if (y_col_global < x_col_global) {
+                        col_local = this->col_ind[y_k]; use_y = true;
+                    } else if (x_col_global < y_col_global) {
+                        col_local = X.col_ind[x_k]; use_x = true;
                     } else {
-                        col = this->col_ind[y_k]; use_y = true; use_x = true;
+                        col_local = this->col_ind[y_k]; use_y = true; use_x = true;
                     }
                 } else if (y_k < y_end) {
-                    col = this->col_ind[y_k]; use_y = true;
+                    col_local = this->col_ind[y_k]; use_y = true;
                 } else {
-                    col = X.col_ind[x_k]; use_x = true;
+                    col_local = X.col_ind[x_k]; use_x = true;
                 }
                 
-                int c_dim = this->graph->block_sizes[col];
-                size_t blk_sz = r_dim * c_dim;
+                // Wait, col_local is tricky.
+                // If we use Y's local, it maps to some global.
+                // If we use X's local, it maps to SAME global.
+                // But we need NEW local index for new_col_ind.
+                // new_col_ind should store NEW local indices.
+                // But we haven't computed the map from old local to new local yet?
+                // Wait, I removed the map computation in my replacement!
+                // In Step 78, I had code to compute `this_to_new` and `X_to_new`.
+                // But in Step 86, I removed it and just used `col` (local).
+                // If I use old local index in new matrix, it's WRONG because new matrix has different graph!
                 
-                new_col_ind[dest_idx] = col;
+                // I need to map global index to NEW local index.
+                // new_graph is already constructed.
+                // So I can use new_graph->global_to_local.
+                
+                int col_global;
+                if (use_y && use_x) col_global = this->graph->get_global_index(this->col_ind[y_k]);
+                else if (use_y) col_global = this->graph->get_global_index(this->col_ind[y_k]);
+                else col_global = X.graph->get_global_index(X.col_ind[x_k]);
+                
+                int new_col_local = new_graph->global_to_local.at(col_global);
+                
+                int c_dim = new_graph->block_sizes[col_global];
+                
+                size_t blk_sz = (size_t)r_dim * c_dim;
+                
+                new_col_ind[dest_idx] = new_col_local;
                 new_blk_ptr[dest_idx] = dest_val_offset;
                 
                 T* dest_ptr = new_val.data() + dest_val_offset;
@@ -1022,20 +1117,17 @@ public:
                 dest_val_offset += blk_sz;
             }
         }
-        new_blk_ptr[total_blocks] = new_val.size();
         
+        // Update this
         this->row_ptr = std::move(new_row_ptr);
         this->col_ind = std::move(new_col_ind);
         this->val = std::move(new_val);
         this->blk_ptr = std::move(new_blk_ptr);
         this->norms_valid = false;
         
-        if (!this->owns_graph) {
-            this->graph = this->graph->duplicate();
-            this->owns_graph = true;
-        }
-        this->graph->adj_ptr = this->row_ptr;
-        this->graph->adj_ind = this->col_ind;
+        if (this->owns_graph && this->graph) delete this->graph;
+        this->graph = new_graph;
+        this->owns_graph = true;
     }
 
     void axpy(T alpha, const BlockSpMat<T, Kernel>& other) {

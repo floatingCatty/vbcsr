@@ -329,6 +329,19 @@ class VBCSR(LinearOperator):
             return res
         return NotImplemented
 
+    def __sub__(self, other: 'VBCSR') -> 'VBCSR':
+        if isinstance(other, VBCSR):
+            res = self.duplicate()
+            res -= other
+            return res
+        return NotImplemented
+    
+    def __isub__(self, other: 'VBCSR') -> 'VBCSR':
+        if isinstance(other, VBCSR):
+            self._core.axpy(-1.0, other._core)
+            return self
+        return NotImplemented
+
     def __iadd__(self, other: 'VBCSR') -> 'VBCSR':
         if isinstance(other, VBCSR):
             self._core.axpy(1.0, other._core)

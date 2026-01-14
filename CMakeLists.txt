@@ -136,6 +136,7 @@ endfunction()
 # add_vbcsr_test(benchmark_dist vbcsr/core/test/benchmark_dist.cpp)
 # add_vbcsr_test(benchmark_spmm_complex vbcsr/core/test/benchmark_spmm_complex.cpp)
 # add_vbcsr_test(test_axpby vbcsr/core/test/test_axpby.cpp)
+# add_vbcsr_test(test_axpby_diff_graph vbcsr/core/test/test_axpby_diff_graph.cpp)
 # add_vbcsr_test(benchmark_axpby vbcsr/core/test/benchmark_axpby.cpp)
 # 
 # if(GTEST_FOUND)
