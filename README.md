@@ -108,3 +108,11 @@ from scipy.sparse.linalg import cg
 # Use VBCSR as a LinearOperator
 x, info = cg(mat, v, rtol=1e-5)
 ```
+
+### Filtered SpMM
+To perform sparse matrix-matrix multiplication with filtering (dropping small blocks), use the `spmm` method directly:
+
+```python
+# C = A * B, dropping blocks with Frobenius norm < 1e-6
+C = A.spmm(B, threshold=1e-6)
+```

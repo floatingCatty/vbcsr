@@ -351,6 +351,21 @@ class VBCSR(LinearOperator):
     def __rmul__(self, other: Union[float, complex, int]) -> 'VBCSR':
         return self.__mul__(other)
 
+    def __matmul__(self, other: Union['VBCSR', DistVector, DistMultiVector, np.ndarray]) -> Union['VBCSR', DistVector, DistMultiVector]:
+        """
+        Support for the @ operator.
+        
+        If other is VBCSR, performs SpMM (Sparse Matrix-Matrix Multiplication).
+        If other is Vector/MultiVector/ndarray, performs Matrix-Vector Multiplication.
+        """
+        if isinstance(other, VBCSR):
+            return self.spmm(other)
+        elif isinstance(other, (DistVector, DistMultiVector, np.ndarray)):
+            return self.mult(other)
+        else:
+            return NotImplemented
+
+
     def spmm(self, B: 'VBCSR', threshold: float = 0.0, transA: bool = False, transB: bool = False) -> 'VBCSR':
         """
         Sparse Matrix-Matrix Multiplication: C = op(A) * op(B).

@@ -65,6 +65,36 @@ assemble(self) -> None
 ```
 Finalizes matrix assembly. Must be called after adding blocks and before multiplication.
 
+#### `extract_submatrix`
+```python
+extract_submatrix(self, global_indices: List[int]) -> 'VBCSR'
+```
+Extracts a submatrix corresponding to the specified global block indices.
+- **global_indices**: List of global block indices to extract.
+- **Returns**: A new `VBCSR` matrix containing the submatrix.
+
+#### `insert_submatrix`
+```python
+insert_submatrix(self, sub_mat: 'VBCSR', global_indices: List[int]) -> None
+```
+Inserts a submatrix back into the original matrix at the specified global block indices.
+- **sub_mat**: The submatrix to insert (must be a `VBCSR` object).
+- **global_indices**: List of global block indices corresponding to the submatrix rows/cols.
+
+#### `to_dense`
+```python
+to_dense(self) -> np.ndarray
+```
+Converts the locally owned part of the matrix to a dense 2D NumPy array.
+- **Returns**: 2D numpy array of shape `(owned_rows, all_local_cols)`.
+
+#### `from_dense`
+```python
+from_dense(self, dense_matrix: np.ndarray) -> None
+```
+Fills the matrix with values from a dense 2D NumPy array. The elements outside the sparsity pattern will be ignored.
+- **dense_matrix**: 2D numpy array containing the values.
+
 #### `mult`
 ```python
 mult(self, x: Union[DistVector, DistMultiVector, np.ndarray], y: Optional[Union[DistVector, DistMultiVector]] = None) -> Union[DistVector, DistMultiVector]
@@ -72,6 +102,24 @@ mult(self, x: Union[DistVector, DistMultiVector, np.ndarray], y: Optional[Union[
 Performs matrix multiplication $y = A \times x$.
 - **x**: Input vector/multivector or numpy array (local part).
 - **y**: Optional output vector.
+
+#### `spmm`
+```python
+spmm(self, B: 'VBCSR', threshold: float = 0.0, transA: bool = False, transB: bool = False) -> 'VBCSR'
+```
+Sparse Matrix-Matrix Multiplication: $C = op(A) \times op(B)$.
+- **B**: The matrix to multiply with.
+- **threshold**: Threshold for dropping small blocks.
+- **transA**, **transB**: If True, use transpose/conjugate transpose.
+
+#### `@` Operator
+The `@` operator is supported for both matrix-vector and matrix-matrix multiplication:
+```python
+y = A @ x  # Matrix-Vector
+C = A @ B  # SpMM (no filtering)
+```
+> [!NOTE]
+> The `@` operator performs standard SpMM without filtering (`threshold=0.0`). If you need to filter small blocks, use the `spmm` method directly.
 
 #### `create_vector`
 ```python
