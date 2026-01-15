@@ -144,3 +144,5 @@ endfunction()
 #     add_executable(test_block_csr_export vbcsr/core/test/test_block_csr_export.cpp)
 #     target_link_libraries(test_block_csr_export PRIVATE vbcsr GTest::gtest GTest::gtest_main Threads::Threads dl)
 # endif()
+
+# add_vbcsr_test(test_density vbcsr/core/test/test_density.cpp)

@@ -2679,6 +2679,26 @@ public:
             }
         }
     }
+    // Calculate block density (global nnz blocks / total global blocks^2)
+    double get_block_density() const {
+        long long local_nnz = col_ind.size();
+        long long global_nnz = 0;
+        
+        MPI_Allreduce(&local_nnz, &global_nnz, 1, MPI_LONG_LONG, MPI_SUM, graph->comm);
+        
+        // Total global blocks N
+        // graph->block_displs is size+1, last element is total blocks
+        if (graph->block_displs.empty()) {
+             // Should not happen if constructed, but safety check
+             return 0.0;
+        }
+        long long N = graph->block_displs.back();
+        
+        if (N == 0) return 0.0;
+        
+        double density = (double)global_nnz / (double)(N * N);
+        return density;
+    }
 };
 
 } // namespace vbcsr
