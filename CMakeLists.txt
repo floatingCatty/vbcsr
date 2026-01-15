@@ -138,6 +138,7 @@ endfunction()
 # add_vbcsr_test(test_axpby vbcsr/core/test/test_axpby.cpp)
 # add_vbcsr_test(test_axpby_diff_graph vbcsr/core/test/test_axpby_diff_graph.cpp)
 # add_vbcsr_test(benchmark_axpby vbcsr/core/test/benchmark_axpby.cpp)
+# add_vbcsr_test(debug_isqrtm vbcsr/core/test/debug_isqrtm.cpp)
 # 
 # if(GTEST_FOUND)
 #     add_executable(test_block_csr_export vbcsr/core/test/test_block_csr_export.cpp)

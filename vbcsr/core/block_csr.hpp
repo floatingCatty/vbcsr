@@ -155,6 +155,11 @@ public:
             blk_ptr = std::move(other.blk_ptr);
             remote_blocks = std::move(other.remote_blocks);
             owns_graph = other.owns_graph;
+            
+            // Fix: Move norms state
+            block_norms = std::move(other.block_norms);
+            norms_valid = other.norms_valid;
+            
             other.graph = nullptr;
             other.owns_graph = false;
         }
@@ -1603,93 +1608,15 @@ public:
                 if (graph_C->block_sizes[i] > 0) continue; // Skip owned
                 
                 int g_col = graph_C->get_global_index(i);
-                
-                // Look up in collected dimensions
-                // Note: std::map is not thread safe for read if we modify it, but we only read here.
-                // However, map lookup is not O(1). For large matrices, this might be slow.
-                // But ghost_dims is local and likely not too huge?
-                // Actually, ghost_dims can be large.
-                // But we are inside parallel region.
-                // Concurrent read is safe.
-                
-                // We cannot use .at() or [] efficiently if not const?
-                // Just use find.
-                // But we need to capture ghost_dims.
-                
-                // Wait, OpenMP parallel for with std::map lookup?
-                // It works.
-                
-                // But wait, ghost_dims is constructed in serial loop above.
-                // So it is fully populated.
-                
-                // Optimization: ghost_dims might be missing some columns?
-                // No, every column in my_adj comes from recv_buf, so it must be in ghost_dims.
-                // EXCEPT if construct_distributed adds ghosts that are not in my_adj?
-                // No, construct_distributed adds ghosts based on adj.
-                
-                // So:
-                // if (ghost_dims.count(g_col)) graph_C->block_sizes[i] = ghost_dims.at(g_col);
-                // But we can't use 'at' inside parallel region easily without care? 
-                // 'at' is const-safe if map is const.
-                // But ghost_dims is not const.
-                // But we don't modify it.
-                // It should be fine.
-            }
-        }
-        
-        // Let's rewrite the loop to be safe and clean
-        {
-             int c_n_cols = graph_C->global_to_local.size();
-             if (graph_C->block_sizes.size() < c_n_cols) {
-                 graph_C->block_sizes.resize(c_n_cols, 0);
-             }
-             
-             // Serial loop for map lookup to avoid any thread issues with map
-             // Or copy map to vector? No.
-             // Just run serial or use concurrent map?
-             // Since we just read, parallel is fine.
-             
-             #pragma omp parallel for
-             for(int i = 0; i < c_n_cols; ++i) {
-                 if (graph_C->block_sizes[i] > 0) continue;
-                 int g_col = graph_C->get_global_index(i);
-                 // We assume g_col is in ghost_dims because it came from recv_buf
-                 // But we should check to be safe
-                 // We can't use ghost_dims.at(g_col) if it throws.
-                 // We can't use ghost_dims[g_col] because it modifies.
-                 // We must use find.
-                 
-                 // To avoid map contention/cache issues, maybe serial is better if map is large?
-                 // But let's stick to parallel for consistency with other fixes.
-                 // But std::map find is O(log N).
-                 
-                 // Actually, we can just iterate ghost_dims and fill graph_C?
-                 // No, we need to fill by local index i.
-                 
-                 // Let's use the map.
-             }
-        }
-        
-        // Wait, I can't put complex logic in ReplacementContent easily if I want to be concise.
-        // I will write the code clearly.
-        
-        // Re-implementing the block:
-        {
-            int c_n_cols = graph_C->global_to_local.size();
-            if (graph_C->block_sizes.size() < c_n_cols) {
-                graph_C->block_sizes.resize(c_n_cols, 0);
-            }
-            
-            // We use a serial loop here because std::map lookup in parallel might be slow due to cache/contention
-            // and we want to avoid any potential issues. Also map size is proportional to boundary, not full matrix.
-            for(int i = 0; i < c_n_cols; ++i) {
-                if (graph_C->block_sizes[i] > 0) continue;
-                int g_col = graph_C->get_global_index(i);
+                // Use .at() for thread-safe read-only access (operator[] is not const)
                 if (ghost_dims.count(g_col)) {
                     graph_C->block_sizes[i] = ghost_dims.at(g_col);
+                } else {
+                     // Should not happen if all columns came from recv_buf
+                     throw std::runtime_error("Missing block size in transpose for ghost col");
                 }
             }
-            
+
             // Recompute offsets
             graph_C->block_offsets.resize(c_n_cols + 1);
             graph_C->block_offsets[0] = 0;
@@ -2301,13 +2228,15 @@ public:
                         int b_end = B.row_ptr[l_row_B+1];
                         for(int j=b_start; j<b_end; ++j) {
                             double norm_B = B_local_norms[j];
-                            if (norm_A * norm_B < row_eps) continue;
-
+                            
                             int l_col_B = B.col_ind[j];
                             int g_col_B = B.graph->get_global_index(l_col_B);
                             const T* b_val = B.val.data() + B.blk_ptr[j];
+
+                            if (norm_A * norm_B < row_eps) continue;
+
                             int c_dim = B.graph->block_sizes[l_col_B];
-                            
+
                             size_t h = (size_t)g_col_B & HASH_MASK;
                             size_t count = 0;
                             while(table[h].tag == tag) {
