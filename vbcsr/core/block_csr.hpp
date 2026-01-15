@@ -352,7 +352,11 @@ public:
         
         // 2. Exchange counts and setup displacements
         std::vector<size_t> recv_counts(size);
-        MPI_Alltoall(send_counts.data(), sizeof(size_t), MPI_BYTE, recv_counts.data(), sizeof(size_t), MPI_BYTE, graph->comm);
+        if (graph->size > 1) {
+            MPI_Alltoall(send_counts.data(), sizeof(size_t), MPI_BYTE, recv_counts.data(), sizeof(size_t), MPI_BYTE, graph->comm);
+        } else {
+            recv_counts = send_counts;
+        }
         
         std::vector<size_t> sdispls(size + 1, 0), rdispls(size + 1, 0);
         for(int i=0; i<size; ++i) {
@@ -381,8 +385,12 @@ public:
         
         // 4. Exchange data
         std::vector<char> recv_blob(rdispls[size]);
-        safe_alltoallv(send_blob.data(), send_counts, sdispls, MPI_BYTE,
-                       recv_blob.data(), recv_counts, rdispls, MPI_BYTE, graph->comm);
+        if (graph->size > 1) {
+            safe_alltoallv(send_blob.data(), send_counts, sdispls, MPI_BYTE,
+                           recv_blob.data(), recv_counts, rdispls, MPI_BYTE, graph->comm);
+        } else {
+            recv_blob = send_blob;
+        }
                   
         // 5. Process received
         for(int i=0; i<size; ++i) {
@@ -1502,8 +1510,13 @@ public:
         // 2. Exchange counts
         std::vector<int> recv_counts(size);
         std::vector<int> recv_data_counts(size);
-        MPI_Alltoall(send_counts.data(), 1, MPI_INT, recv_counts.data(), 1, MPI_INT, graph->comm);
-        MPI_Alltoall(send_data_counts.data(), 1, MPI_INT, recv_data_counts.data(), 1, MPI_INT, graph->comm);
+        if (graph->size > 1) {
+            MPI_Alltoall(send_counts.data(), 1, MPI_INT, recv_counts.data(), 1, MPI_INT, graph->comm);
+            MPI_Alltoall(send_data_counts.data(), 1, MPI_INT, recv_data_counts.data(), 1, MPI_INT, graph->comm);
+        } else {
+            recv_counts = send_counts;
+            recv_data_counts = send_data_counts;
+        }
         
         // 3. Setup displacements
         std::vector<int> sdispls(size + 1, 0), rdispls(size + 1, 0);
@@ -1547,8 +1560,12 @@ public:
         
         // 5. Exchange data
         std::vector<int> recv_buf(rdispls[size]);
-        MPI_Alltoallv(send_buf.data(), send_counts.data(), sdispls.data(), MPI_INT,
-                      recv_buf.data(), recv_counts.data(), rdispls.data(), MPI_INT, graph->comm);
+        if (graph->size > 1) {
+            MPI_Alltoallv(send_buf.data(), send_counts.data(), sdispls.data(), MPI_INT,
+                          recv_buf.data(), recv_counts.data(), rdispls.data(), MPI_INT, graph->comm);
+        } else {
+            recv_buf = send_buf;
+        }
                       
         std::vector<T> recv_val(rdispls_data[size]);
         std::vector<int> send_data_bytes(size), recv_data_bytes(size), sdispls_data_bytes(size + 1), rdispls_data_bytes(size + 1);
@@ -1561,8 +1578,12 @@ public:
         sdispls_data_bytes[size] = sdispls_data[size] * sizeof(T);
         rdispls_data_bytes[size] = rdispls_data[size] * sizeof(T);
 
-        MPI_Alltoallv(send_val.data(), send_data_bytes.data(), sdispls_data_bytes.data(), MPI_BYTE,
-                      recv_val.data(), recv_data_bytes.data(), rdispls_data_bytes.data(), MPI_BYTE, graph->comm);
+        if (graph->size > 1) {
+            MPI_Alltoallv(send_val.data(), send_data_bytes.data(), sdispls_data_bytes.data(), MPI_BYTE,
+                          recv_val.data(), recv_data_bytes.data(), rdispls_data_bytes.data(), MPI_BYTE, graph->comm);
+        } else {
+            recv_val = send_val;
+        }
                       
         // 6. Construct C
         std::vector<std::vector<int>> my_adj(graph->owned_global_indices.size());
@@ -1777,7 +1798,11 @@ public:
 
         // 3. Exchange request counts
         std::vector<int> recv_req_counts(size);
-        MPI_Alltoall(send_req_counts.data(), 1, MPI_INT, recv_req_counts.data(), 1, MPI_INT, graph->comm);
+        if (graph->size > 1) {
+            MPI_Alltoall(send_req_counts.data(), 1, MPI_INT, recv_req_counts.data(), 1, MPI_INT, graph->comm);
+        } else {
+            recv_req_counts = send_req_counts;
+        }
 
         std::vector<int> sdispls(size + 1, 0), rdispls(size + 1, 0);
         for(int i=0; i<size; ++i) {
@@ -1794,8 +1819,12 @@ public:
         }
 
         std::vector<int> recv_req_buf(rdispls[size]);
-        MPI_Alltoallv(send_req_buf.data(), send_req_counts.data(), sdispls.data(), MPI_INT,
-                      recv_req_buf.data(), recv_req_counts.data(), rdispls.data(), MPI_INT, graph->comm);
+        if (graph->size > 1) {
+            MPI_Alltoallv(send_req_buf.data(), send_req_counts.data(), sdispls.data(), MPI_INT,
+                          recv_req_buf.data(), recv_req_counts.data(), rdispls.data(), MPI_INT, graph->comm);
+        } else {
+            recv_req_buf = send_req_buf;
+        }
 
         // 5. Counting pass for replies
         std::vector<double> B_norms = B.compute_block_norms();
@@ -1816,7 +1845,11 @@ public:
 
         // 6. Exchange reply counts
         std::vector<int> recv_reply_bytes(size);
-        MPI_Alltoall(send_reply_bytes.data(), 1, MPI_INT, recv_reply_bytes.data(), 1, MPI_INT, graph->comm);
+        if (graph->size > 1) {
+            MPI_Alltoall(send_reply_bytes.data(), 1, MPI_INT, recv_reply_bytes.data(), 1, MPI_INT, graph->comm);
+        } else {
+            recv_reply_bytes = send_reply_bytes;
+        }
 
         std::vector<int> sdispls_reply(size + 1, 0), rdispls_reply(size + 1, 0);
         for(int i=0; i<size; ++i) {
@@ -1853,8 +1886,12 @@ public:
 
         // 8. Exchange replies
         std::vector<char> recv_reply_blob(rdispls_reply[size]);
-        MPI_Alltoallv(send_reply_blob.data(), send_reply_bytes.data(), sdispls_reply.data(), MPI_BYTE,
-                      recv_reply_blob.data(), recv_reply_bytes.data(), rdispls_reply.data(), MPI_BYTE, graph->comm);
+        if (graph->size > 1) {
+            MPI_Alltoallv(send_reply_blob.data(), send_reply_bytes.data(), sdispls_reply.data(), MPI_BYTE,
+                          recv_reply_blob.data(), recv_reply_bytes.data(), rdispls_reply.data(), MPI_BYTE, graph->comm);
+        } else {
+            recv_reply_blob = send_reply_blob;
+        }
 
         // 9. Unpack replies
         for(int i=0; i<size; ++i) {
@@ -2029,7 +2066,11 @@ public:
         
         // 2. Exchange request counts
         std::vector<int> recv_req_counts(size);
-        MPI_Alltoall(send_req_counts.data(), 1, MPI_INT, recv_req_counts.data(), 1, MPI_INT, graph->comm);
+        if (graph->size > 1) {
+            MPI_Alltoall(send_req_counts.data(), 1, MPI_INT, recv_req_counts.data(), 1, MPI_INT, graph->comm);
+        } else {
+            recv_req_counts = send_req_counts;
+        }
         
         // 3. Setup request displacements
         std::vector<int> sdispls(size + 1, 0), rdispls(size + 1, 0);
@@ -2051,8 +2092,12 @@ public:
         
         // 5. Exchange requests
         std::vector<int> recv_req_buf(rdispls[size]);
-        MPI_Alltoallv(send_req_buf.data(), send_req_counts.data(), sdispls.data(), MPI_INT,
-                      recv_req_buf.data(), recv_req_counts.data(), rdispls.data(), MPI_INT, graph->comm);
+        if (graph->size > 1) {
+            MPI_Alltoallv(send_req_buf.data(), send_req_counts.data(), sdispls.data(), MPI_INT,
+                          recv_req_buf.data(), recv_req_counts.data(), rdispls.data(), MPI_INT, graph->comm);
+        } else {
+            recv_req_buf = send_req_buf;
+        }
                       
         // 6. Counting pass for replies
         std::vector<int> send_reply_bytes(size, 0);
@@ -2081,7 +2126,11 @@ public:
         
         // 7. Exchange reply counts
         std::vector<int> recv_reply_bytes(size);
-        MPI_Alltoall(send_reply_bytes.data(), 1, MPI_INT, recv_reply_bytes.data(), 1, MPI_INT, graph->comm);
+        if (graph->size > 1) {
+            MPI_Alltoall(send_reply_bytes.data(), 1, MPI_INT, recv_reply_bytes.data(), 1, MPI_INT, graph->comm);
+        } else {
+            recv_reply_bytes = send_reply_bytes;
+        }
         
         // 8. Setup reply displacements
         std::vector<int> sdispls_reply(size + 1, 0), rdispls_reply(size + 1, 0);
@@ -2125,8 +2174,12 @@ public:
         
         // 10. Exchange replies
         std::vector<char> recv_reply_blob(rdispls_reply[size]);
-        MPI_Alltoallv(send_reply_blob.data(), send_reply_bytes.data(), sdispls_reply.data(), MPI_BYTE,
-                      recv_reply_blob.data(), recv_reply_bytes.data(), rdispls_reply.data(), MPI_BYTE, graph->comm);
+        if (graph->size > 1) {
+            MPI_Alltoallv(send_reply_blob.data(), send_reply_bytes.data(), sdispls_reply.data(), MPI_BYTE,
+                          recv_reply_blob.data(), recv_reply_bytes.data(), rdispls_reply.data(), MPI_BYTE, graph->comm);
+        } else {
+            recv_reply_blob = send_reply_blob;
+        }
                       
         // 11. Unpack
         for(int i=0; i<size; ++i) {
