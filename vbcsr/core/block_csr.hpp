@@ -2225,7 +2225,7 @@ public:
         
         struct HashEntry {
             int key; 
-            size_t value;
+            long long value;
             int tag; 
         };
         
