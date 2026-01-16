@@ -74,7 +74,7 @@ public:
     std::vector<T> val;
     
     // Pointers to block starts in val
-    std::vector<size_t> blk_ptr;
+    std::vector<long long> blk_ptr;
     
     // Cached block norms
     mutable std::vector<double> block_norms;
@@ -101,9 +101,9 @@ public:
         #pragma omp parallel for
         for (int i = 0; i < nnz; ++i) {
             double sum = 0.0;
-            size_t start = blk_ptr[i];
-            size_t end = blk_ptr[i+1];
-            for (size_t k = start; k < end; ++k) {
+            long long start = blk_ptr[i];
+            long long end = blk_ptr[i+1];
+            for (long long k = start; k < end; ++k) {
                 sum += get_sq_norm(val[k]);
             }
             norms[i] = std::sqrt(sum);
@@ -444,7 +444,7 @@ public:
         // optimizable
         for (int k = start; k < end; ++k) {
             if (col_ind[k] == local_col) {
-                size_t offset = blk_ptr[k];
+                long long offset = blk_ptr[k];
                 // size_t size = blk_ptr[k+1] - offset; // This is total elements
                 T* target = val.data() + offset;
                 
@@ -904,8 +904,8 @@ public:
                              y_k++;
                          }
                          // Guaranteed found
-                         size_t y_offset = this->blk_ptr[y_k];
-                         size_t x_offset = X.blk_ptr[x_k];
+                         long long y_offset = this->blk_ptr[y_k];
+                         long long x_offset = X.blk_ptr[x_k];
                          int r_dim = this->graph->block_sizes[i];
                          int c_dim = this->graph->block_sizes[target_col];
                          int size = r_dim * c_dim;
@@ -1031,7 +1031,7 @@ public:
         new_graph->get_matrix_structure(new_row_ptr, new_col_ind);
         
         int total_blocks_new = new_col_ind.size();
-        std::vector<size_t> new_blk_ptr(total_blocks_new + 1);
+        std::vector<long long> new_blk_ptr(total_blocks_new + 1);
         new_blk_ptr[0] = 0;
         
         std::vector<size_t> row_val_size_new(n_rows);
@@ -1050,7 +1050,7 @@ public:
             row_val_size_new[i] = sz;
         }
         
-        std::vector<size_t> row_val_offset_new(n_rows + 1);
+        std::vector<long long> row_val_offset_new(n_rows + 1);
         row_val_offset_new[0] = 0;
         for(int i=0; i<n_rows; ++i) row_val_offset_new[i+1] = row_val_offset_new[i] + row_val_size_new[i];
         
@@ -1139,7 +1139,7 @@ public:
                 }
                 
                 int k = it->second;
-                size_t dest_offset = new_blk_ptr[k];
+                long long dest_offset = new_blk_ptr[k];
                 int r_dim = new_graph->block_sizes[i];
                 int local_col = new_col_ind[k];
                 int c_dim = new_graph->block_sizes[local_col];
@@ -1200,7 +1200,7 @@ public:
                 
                 if (graph->get_global_index(local_col) == global_row) {
                     // Found diagonal block
-                    size_t offset = blk_ptr[k];
+                    long long offset = blk_ptr[k];
                     int r_dim = graph->block_sizes[i];
                     int c_dim = graph->block_sizes[local_col];
                     
@@ -1239,7 +1239,7 @@ public:
                 int local_col = col_ind[k];
                 if (graph->get_global_index(local_col) == global_row) {
                     // Found diagonal block
-                    size_t offset = blk_ptr[k];
+                    long long offset = blk_ptr[k];
                     int r_dim = graph->block_sizes[i];
                     int c_dim = graph->block_sizes[local_col];
                     
@@ -1286,7 +1286,7 @@ public:
                 
                 T diff = R_j - R_i;
                 
-                size_t offset = blk_ptr[k];
+                long long offset = blk_ptr[k];
                 int r_dim = graph->block_sizes[i];
                 int c_dim = graph->block_sizes[col];
                 int block_size = r_dim * c_dim;
@@ -1319,7 +1319,7 @@ public:
         
         std::vector<int> new_col_ind;
         std::vector<T> new_val;
-        std::vector<size_t> new_blk_ptr;
+        std::vector<long long> new_blk_ptr;
         new_blk_ptr.push_back(0);
         
         // Estimate size to reserve
@@ -1339,10 +1339,10 @@ public:
                     int col = col_ind[k];
                     new_col_ind.push_back(col);
                     
-                    size_t offset = blk_ptr[k];
+                    long long offset = blk_ptr[k];
                     size_t size = blk_ptr[k+1] - offset;
                     
-                    size_t new_offset = new_val.size();
+                    long long new_offset = new_val.size();
                     new_val.insert(new_val.end(), val.begin() + offset, val.begin() + offset + size);
                     new_blk_ptr.push_back(new_val.size());
                     
@@ -1557,7 +1557,7 @@ public:
                 meta_ptr[3] = r_dim;
                 current_counts[owner] += 4;
                 
-                size_t offset = blk_ptr[k];
+                long long offset = blk_ptr[k];
                 size_t count = r_dim * c_dim;
                 std::memcpy(send_val.data() + sdispls_data[owner] + current_data_counts[owner], val.data() + offset, count * sizeof(T));
                 current_data_counts[owner] += count;
@@ -1744,7 +1744,7 @@ public:
                 int c_dim = graph->block_sizes[col];
                 int col_start_idx = graph->block_offsets[col] + 1; // 1-based
                 
-                size_t offset = blk_ptr[k];
+                long long offset = blk_ptr[k];
                 const T* block_data = val.data() + offset;
                 
                 // Block is stored in ColMajor
@@ -2064,53 +2064,53 @@ public:
         int rank = graph->rank;
         
         // 1. Counting pass for requests
-        std::vector<int> send_req_counts(size, 0);
+        std::vector<size_t> send_req_counts(size, 0);
         for (const auto& bid : required_blocks) {
             int owner = graph->find_owner(bid.row);
-            send_req_counts[owner] += 2; // row, col
+            send_req_counts[owner] += 2 * sizeof(int); // row, col
         }
         
         // 2. Exchange request counts
-        std::vector<int> recv_req_counts(size);
+        std::vector<size_t> recv_req_counts(size);
         if (graph->size > 1) {
-            MPI_Alltoall(send_req_counts.data(), 1, MPI_INT, recv_req_counts.data(), 1, MPI_INT, graph->comm);
+            MPI_Alltoall(send_req_counts.data(), sizeof(size_t), MPI_BYTE, recv_req_counts.data(), sizeof(size_t), MPI_BYTE, graph->comm);
         } else {
             recv_req_counts = send_req_counts;
         }
         
         // 3. Setup request displacements
-        std::vector<int> sdispls(size + 1, 0), rdispls(size + 1, 0);
+        std::vector<size_t> sdispls(size + 1, 0), rdispls(size + 1, 0);
         for(int i=0; i<size; ++i) {
             sdispls[i+1] = sdispls[i] + send_req_counts[i];
             rdispls[i+1] = rdispls[i] + recv_req_counts[i];
         }
         
         // 4. Pack request buffer
-        std::vector<int> send_req_buf(sdispls[size]);
-        std::vector<int> current_req_counts(size, 0);
+        std::vector<int> send_req_buf(sdispls[size] / sizeof(int));
+        std::vector<size_t> current_req_counts(size, 0);
         for (const auto& bid : required_blocks) {
             int owner = graph->find_owner(bid.row);
-            int* ptr = send_req_buf.data() + sdispls[owner] + current_req_counts[owner];
+            int* ptr = send_req_buf.data() + (sdispls[owner] + current_req_counts[owner]) / sizeof(int);
             ptr[0] = bid.row;
             ptr[1] = bid.col;
-            current_req_counts[owner] += 2;
+            current_req_counts[owner] += 2 * sizeof(int);
         }
         
         // 5. Exchange requests
-        std::vector<int> recv_req_buf(rdispls[size]);
+        std::vector<int> recv_req_buf(rdispls[size] / sizeof(int));
         if (graph->size > 1) {
-            MPI_Alltoallv(send_req_buf.data(), send_req_counts.data(), sdispls.data(), MPI_INT,
-                          recv_req_buf.data(), recv_req_counts.data(), rdispls.data(), MPI_INT, graph->comm);
+            safe_alltoallv(send_req_buf.data(), send_req_counts, sdispls, MPI_BYTE,
+                          recv_req_buf.data(), recv_req_counts, rdispls, MPI_BYTE, graph->comm);
         } else {
             recv_req_buf = send_req_buf;
         }
                       
         // 6. Counting pass for replies
-        std::vector<int> send_reply_bytes(size, 0);
+        std::vector<size_t> send_reply_bytes(size, 0);
         int* ptr = recv_req_buf.data();
         for(int i=0; i<size; ++i) {
-            int count = recv_req_counts[i];
-            int* end = ptr + count;
+            size_t count_bytes = recv_req_counts[i];
+            int* end = ptr + count_bytes / sizeof(int);
             while(ptr < end) {
                 int g_row = *ptr++;
                 int g_col = *ptr++;
@@ -2131,15 +2131,15 @@ public:
         }
         
         // 7. Exchange reply counts
-        std::vector<int> recv_reply_bytes(size);
+        std::vector<size_t> recv_reply_bytes(size);
         if (graph->size > 1) {
-            MPI_Alltoall(send_reply_bytes.data(), 1, MPI_INT, recv_reply_bytes.data(), 1, MPI_INT, graph->comm);
+            MPI_Alltoall(send_reply_bytes.data(), sizeof(size_t), MPI_BYTE, recv_reply_bytes.data(), sizeof(size_t), MPI_BYTE, graph->comm);
         } else {
             recv_reply_bytes = send_reply_bytes;
         }
         
         // 8. Setup reply displacements
-        std::vector<int> sdispls_reply(size + 1, 0), rdispls_reply(size + 1, 0);
+        std::vector<size_t> sdispls_reply(size + 1, 0), rdispls_reply(size + 1, 0);
         for(int i=0; i<size; ++i) {
             sdispls_reply[i+1] = sdispls_reply[i] + send_reply_bytes[i];
             rdispls_reply[i+1] = rdispls_reply[i] + recv_reply_bytes[i];
@@ -2150,8 +2150,8 @@ public:
         ptr = recv_req_buf.data();
         for(int i=0; i<size; ++i) {
             char* blob_ptr = send_reply_blob.data() + sdispls_reply[i];
-            int count = recv_req_counts[i];
-            int* end = ptr + count;
+            size_t count_bytes = recv_req_counts[i];
+            int* end = ptr + count_bytes / sizeof(int);
             while(ptr < end) {
                 int g_row = *ptr++;
                 int g_col = *ptr++;
@@ -2163,7 +2163,7 @@ public:
                         if (graph->get_global_index(col_ind[k]) == g_col) {
                             int r_dim = graph->block_sizes[l_row];
                             int c_dim = graph->block_sizes[col_ind[k]];
-                            size_t offset = blk_ptr[k];
+                            long long offset = blk_ptr[k];
                             size_t n_elem = r_dim * c_dim;
                             
                             std::memcpy(blob_ptr, &g_row, sizeof(int)); blob_ptr += sizeof(int);
@@ -2181,8 +2181,8 @@ public:
         // 10. Exchange replies
         std::vector<char> recv_reply_blob(rdispls_reply[size]);
         if (graph->size > 1) {
-            MPI_Alltoallv(send_reply_blob.data(), send_reply_bytes.data(), sdispls_reply.data(), MPI_BYTE,
-                          recv_reply_blob.data(), recv_reply_bytes.data(), rdispls_reply.data(), MPI_BYTE, graph->comm);
+            safe_alltoallv(send_reply_blob.data(), send_reply_bytes, sdispls_reply, MPI_BYTE,
+                          recv_reply_blob.data(), recv_reply_bytes, rdispls_reply, MPI_BYTE, graph->comm);
         } else {
             recv_reply_blob = send_reply_blob;
         }
@@ -2252,7 +2252,7 @@ public:
                 for(int k=c_start; k<c_end; ++k) {
                     int l_col = C.col_ind[k];
                     int g_col = C.graph->get_global_index(l_col);
-                    size_t offset = C.blk_ptr[k];
+                    long long offset = C.blk_ptr[k];
                     
                     size_t h = (size_t)g_col & HASH_MASK;
                     size_t count = 0;
@@ -2422,7 +2422,7 @@ public:
                         total_blocks++;
                         int r_dim = graph->block_sizes[lid];
                         int c_dim = graph->block_sizes[col_lid];
-                        size_t offset = blk_ptr[k];
+                        long long offset = blk_ptr[k];
                         size_t size = blk_ptr[k+1] - offset;
                         
                         size_t old_size = resp_buffer.size();
@@ -2450,10 +2450,6 @@ public:
     FetchContext fetch_blocks(const std::vector<std::vector<int>>& batch_indices) {
         int rank;
         MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-        std::string fname = "debug_fetch_" + std::to_string(rank) + ".txt";
-        std::ofstream out(fname, std::ios::app);
-        out << "DEBUG: fetch_blocks start" << std::endl;
-
         FetchContext ctx;
         
         // 1. Analyze Requirements
@@ -2461,7 +2457,6 @@ public:
         for(const auto& indices : batch_indices) {
             all_required_rows.insert(indices.begin(), indices.end());
         }
-        out << "DEBUG: all_required_rows size: " << all_required_rows.size() << std::endl;
         
         // 2. Identify Local vs Remote
         std::vector<int> local_rows;
@@ -2475,7 +2470,6 @@ public:
                 remote_rows_by_rank[owner].push_back(gid);
             }
         }
-        out << "DEBUG: local_rows: " << local_rows.size() << ", remote_rows: " << remote_rows_by_rank.size() << std::endl;
 
         // Map global_row -> set of required global_cols
         std::map<int, std::set<int>> required_cols_per_row;
@@ -2486,7 +2480,6 @@ public:
         }
 
         // 3. Local Fetch
-        out << "DEBUG: Starting Local Fetch" << std::endl;
         for(int gid : local_rows) {
             if(graph->global_to_local.find(gid) == graph->global_to_local.end()) continue;
             int lid = graph->global_to_local.at(gid);
@@ -2508,7 +2501,7 @@ public:
                     bd.r_dim = graph->block_sizes[lid];
                     bd.c_dim = graph->block_sizes[col_lid];
                     
-                    size_t offset = blk_ptr[k];
+                    long long offset = blk_ptr[k];
                     size_t size = blk_ptr[k+1] - offset;
                     bd.data.resize(size);
                     std::memcpy(bd.data.data(), val.data() + offset, size * sizeof(T));
@@ -2517,7 +2510,6 @@ public:
                 }
             }
         }
-        out << "DEBUG: Local Fetch Done. Blocks: " << ctx.blocks.size() << std::endl;
         
         // 4. Remote Fetch
         // Prepare Requests
@@ -2681,7 +2673,7 @@ public:
         }
         
         // 4. Construct Matrix
-        DistGraph* sub_graph = new DistGraph(MPI_COMM_SELF);
+        DistGraph* sub_graph = new DistGraph(MPI_COMM_SELF); // this make this method thread safe
         sub_graph->construct_serial(M, sub_block_sizes, sub_adj);
         
         BlockSpMat<T, Kernel> sub_mat(sub_graph);
