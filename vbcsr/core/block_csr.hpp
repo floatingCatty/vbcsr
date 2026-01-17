@@ -1058,7 +1058,7 @@ public:
         for (int i = 0; i < n_rows; ++i) {
             int start = new_row_ptr[i];
             int end = new_row_ptr[i+1];
-            size_t offset = row_val_offset_new[i];
+            long long offset = row_val_offset_new[i];
             int r_dim = new_graph->block_sizes[i];
             for(int k=start; k<end; ++k) {
                 new_blk_ptr[k] = offset;
