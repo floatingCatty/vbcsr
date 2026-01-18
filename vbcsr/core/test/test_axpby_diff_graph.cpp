@@ -25,11 +25,11 @@ bool check_value(const BlockSpMat<double, NaiveKernel<double>>& mat,
             int gid_c = mat.graph->get_global_index(lid_c);
             
             if (gid_c == global_col) {
-                size_t offset = mat.blk_ptr[k];
+                double* data = mat.arena.get_ptr(mat.blk_handles[k]);
                 // Check first element
-                if (std::abs(mat.val[offset] - expected_val) > tol) {
+                if (std::abs(data[0] - expected_val) > tol) {
                     std::cerr << "Mismatch at (" << global_row << ", " << global_col << "): "
-                              << "Got " << mat.val[offset] << ", Expected " << expected_val << std::endl;
+                              << "Got " << data[0] << ", Expected " << expected_val << std::endl;
                     return false;
                 }
                 return true;

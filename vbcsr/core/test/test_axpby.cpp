@@ -39,24 +39,24 @@ bool check_equal(const BlockSpMat<double, NaiveKernel<double>>& mat,
                 // Let's assume ref_data contains all non-zeros.
                 // Actually, if we merge, we might have explicit zeros.
                 // So we should check if values are small.
-                size_t offset = mat.blk_ptr[k];
+                double* data = mat.arena.get_ptr(mat.blk_handles[k]);
                 int r_dim = block_sizes[gid_r];
                 int c_dim = block_sizes[gid_c];
                 for(int j=0; j<r_dim*c_dim; ++j) {
-                    if (std::abs(mat.val[offset+j]) > tol) {
+                    if (std::abs(data[j]) > tol) {
                         std::cerr << "Unexpected non-zero block at " << gid_r << ", " << gid_c << std::endl;
                         return false;
                     }
                 }
             } else {
                 const auto& ref_block = ref_data.at({gid_r, gid_c});
-                size_t offset = mat.blk_ptr[k];
+                double* data = mat.arena.get_ptr(mat.blk_handles[k]);
                 int r_dim = block_sizes[gid_r];
                 int c_dim = block_sizes[gid_c];
                 for(int j=0; j<r_dim*c_dim; ++j) {
-                    if (std::abs(mat.val[offset+j] - ref_block[j]) > tol) {
+                    if (std::abs(data[j] - ref_block[j]) > tol) {
                         std::cerr << "Value mismatch at " << gid_r << ", " << gid_c << " idx " << j 
-                                  << " got " << mat.val[offset+j] << " expected " << ref_block[j] << std::endl;
+                                  << " got " << data[j] << " expected " << ref_block[j] << std::endl;
                         return false;
                     }
                 }
@@ -162,8 +162,8 @@ void run_test(int rank, int size) {
             int r = mat.graph->owned_global_indices[i];
             for(int k=mat.row_ptr[i]; k<mat.row_ptr[i+1]; ++k) {
                 int c = mat.graph->get_global_index(mat.col_ind[k]);
-                size_t offset = mat.blk_ptr[k];
-                std::vector<double> blk(mat.val.begin() + offset, mat.val.begin() + offset + 4);
+                double* data_T = mat.arena.get_ptr(mat.blk_handles[k]);
+                std::vector<double> blk(data_T, data_T + 4);
                 data[{r,c}] = blk;
             }
         }

@@ -44,7 +44,7 @@ std::vector<T> gather_dense(BlockSpMat<T, SmartKernel<T>>& A, int global_rows, i
             int gid_col_start = block_offsets[gid_col_blk];
             int c_dim = A.graph->block_sizes[lid_col];
             
-            const T* val = A.val.data() + A.blk_ptr[k];
+            const T* val = A.arena.get_ptr(A.blk_handles[k]);
             
             for(int r=0; r<r_dim; ++r) {
                 for(int c=0; c<c_dim; ++c) {
@@ -159,7 +159,7 @@ void test_random_spmm(int n_block_rows, double density, int min_blk, int max_blk
         // Ensure diagonal is present for A (optional but good for structure)
         // adj[i].push_back(my_start + i); 
     }
-    
+
     // 4. Create Graph & Matrix
     std::vector<int> my_local_block_sizes;
     for(int i=0; i<my_count; ++i) my_local_block_sizes.push_back(block_sizes[my_start + i]);
@@ -179,13 +179,12 @@ void test_random_spmm(int n_block_rows, double density, int min_blk, int max_blk
         int start = A.row_ptr[i];
         int end = A.row_ptr[i+1];
         for(int k=start; k<end; ++k) {
-            size_t offset = A.blk_ptr[k];
-            size_t next_offset = A.blk_ptr[k+1];
-            for(size_t n=0; n<next_offset-offset; ++n) {
+            T* data = A.arena.get_ptr(A.blk_handles[k]);
+            for(size_t n=0; n<A.blk_sizes[k]; ++n) {
                 if constexpr (std::is_same<T, std::complex<double>>::value) {
-                    A.val[offset + n] = std::complex<double>(dis_val(gen), dis_val(gen));
+                    data[n] = std::complex<double>(dis_val(gen), dis_val(gen));
                 } else {
-                    A.val[offset + n] = dis_val(gen);
+                    data[n] = dis_val(gen);
                 }
             }
         }
@@ -197,10 +196,8 @@ void test_random_spmm(int n_block_rows, double density, int min_blk, int max_blk
     
     // We need to ensure A is square for A*A. It is (n_block_rows x n_block_rows).
     
-    // std::cout << "Rank " << rank << " Starting SpMM" << std::endl;
     BlockSpMat<T, SmartKernel<T>> C = A.spmm(A, 0.0); // Threshold 0.0 to keep all
-    // std::cout << "Rank " << rank << " SpMM done" << std::endl;
-    
+
     // 7. Verify
     auto dense_A = gather_dense(A, total_rows, total_rows, block_sizes);
     auto dense_C = gather_dense(C, total_rows, total_rows, block_sizes);
@@ -329,13 +326,12 @@ void test_diverse_spmm(int n_block_rows, double base_density, int min_blk, int m
         int start = A.row_ptr[i];
         int end = A.row_ptr[i+1];
         for(int k=start; k<end; ++k) {
-            size_t offset = A.blk_ptr[k];
-            size_t next_offset = A.blk_ptr[k+1];
-            for(size_t n=0; n<next_offset-offset; ++n) {
+            T* data = A.arena.get_ptr(A.blk_handles[k]);
+            for(size_t n=0; n<A.blk_sizes[k]; ++n) {
                 if constexpr (std::is_same_v<T, std::complex<double>>) {
-                    A.val[offset + n] = std::complex<double>(dis_val(gen), dis_val(gen));
+                    data[n] = std::complex<double>(dis_val(gen), dis_val(gen));
                 } else {
-                    A.val[offset + n] = dis_val(gen);
+                    data[n] = dis_val(gen);
                 }
             }
         }

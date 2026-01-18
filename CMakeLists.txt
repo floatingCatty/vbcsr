@@ -125,8 +125,9 @@ function(add_vbcsr_test name source)
     add_executable(${name} ${source})
     target_link_libraries(${name} PRIVATE vbcsr Threads::Threads dl)
 endfunction()
-# 
-# dd_vbcsr_test(test_spmm vbcsr/core/test/test_spmm.cpp)
+
+# add_vbcsr_test(test_pb_csr vbcsr/core/test/test_pb_csr.cpp)
+# add_vbcsr_test(test_spmm vbcsr/core/test/test_spmm.cpp)
 # add_vbcsr_test(test_block_csr vbcsr/core/test/test_block_csr.cpp)
 # add_vbcsr_test(test_dist_graph vbcsr/core/test/test_dist_graph.cpp)
 # add_vbcsr_test(test_robustness vbcsr/core/test/test_robustness.cpp)

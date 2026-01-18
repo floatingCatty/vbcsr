@@ -140,7 +140,7 @@ int main(int argc, char** argv) {
                     int global_col = indices[col_lid];
                     
                     // Check value
-                    const double* data = sub.val.data() + sub.blk_ptr[k];
+                    const double* data = sub.arena.get_ptr(sub.blk_handles[k]);
                     double expected = expected_value(global_row, global_col);
                     
                     if(std::abs(data[0] - expected) > 1e-6) {

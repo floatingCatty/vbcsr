@@ -174,10 +174,10 @@ void test_block_spmat(DistGraph& graph, int rank) {
             int lid_c = mat.col_ind[k];
             if (graph.get_global_index(lid_c) == gid) {
                 found_diag = true;
-                size_t offset = mat.blk_ptr[k];
+                double* data = mat.arena.get_ptr(mat.blk_handles[k]);
                 int dim = graph.block_sizes[i];
                 for(int j=0; j<dim; ++j) {
-                    if (std::abs(mat.val[offset + j*dim + j] - 3.0) > 1e-12) {
+                    if (std::abs(data[j*dim + j] - 3.0) > 1e-12) {
                          std::cerr << "BlockSpMat::shift failed" << std::endl;
                          MPI_Abort(MPI_COMM_WORLD, 1);
                     }
@@ -208,7 +208,8 @@ void test_block_spmat(DistGraph& graph, int rank) {
     // Set R[i] = i
     double* r_ptr = R.local_data();
     for(int i=0; i<n_owned; ++i) {
-        r_ptr[i] = (double)graph.owned_global_indices[i];
+        int offset = graph.block_offsets[i];
+        r_ptr[offset] = (double)graph.owned_global_indices[i];
     }
     R.sync_ghosts();
     
@@ -228,14 +229,14 @@ void test_block_spmat(DistGraph& graph, int rank) {
             for (int k = start; k < end; ++k) {
                 int lid_c = C.col_ind[k];
                 if (graph.get_global_index(lid_c) == 1) {
-                    size_t offset = C.blk_ptr[k];
-                    if (std::abs(C.val[offset] - 1.0) > 1e-12) {
+                    double* data = C.arena.get_ptr(C.blk_handles[k]);
+                    if (std::abs(data[0] - 1.0) > 1e-12) {
                          std::cerr << "BlockSpMat::commutator_diagonal failed for off-diag" << std::endl;
                          MPI_Abort(MPI_COMM_WORLD, 1);
                     }
                 } else if (graph.get_global_index(lid_c) == 0) {
-                     size_t offset = C.blk_ptr[k];
-                     if (std::abs(C.val[offset]) > 1e-12) {
+                    double* data = C.arena.get_ptr(C.blk_handles[k]);
+                    if (std::abs(data[0]) > 1e-12) {
                          std::cerr << "BlockSpMat::commutator_diagonal failed for diag" << std::endl;
                          MPI_Abort(MPI_COMM_WORLD, 1);
                     }

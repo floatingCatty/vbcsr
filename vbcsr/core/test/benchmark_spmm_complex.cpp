@@ -111,7 +111,7 @@ int main(int argc, char** argv) {
     
     BlockSpMat<T> C(c_graph);
     C.owns_graph = true;
-    std::fill(C.val.begin(), C.val.end(), T(0));
+    
     MPI_Barrier(MPI_COMM_WORLD);
     auto t5 = std::chrono::high_resolution_clock::now();
     

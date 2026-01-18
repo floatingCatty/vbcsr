@@ -91,7 +91,7 @@ int main(int argc, char** argv) {
         int start = mat.row_ptr[i];
         int end = mat.row_ptr[i+1];
         for (int k = start; k < end; ++k) {
-            size_t offset = mat.blk_ptr[k];
+            double* data = mat.arena.get_ptr(mat.blk_handles[k]);
             int lid_c = mat.col_ind[k];
             
             // Resolve GID for column
@@ -107,7 +107,7 @@ int main(int argc, char** argv) {
             
             for (int c = 0; c < c_dim; ++c) {
                 for (int r = 0; r < r_dim; ++r) {
-                    mat.val[offset + c * r_dim + r] = get_mat_val(gid_r, gid_c, r, c);
+                    data[c * r_dim + r] = get_mat_val(gid_r, gid_c, r, c);
                 }
             }
         }

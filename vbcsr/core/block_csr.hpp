@@ -5,6 +5,7 @@
 #include "dist_vector.hpp"
 #include "dist_multivector.hpp"
 #include "kernels.hpp"
+#include "block_memory_pool.hpp" // Added
 #include "mpi_utils.hpp"
 #include <xmmintrin.h>
 #include <vector>
@@ -71,18 +72,27 @@ public:
     std::vector<int> col_ind;
     
     // Values (flattened blocks)
-    std::vector<T> val;
-    
-    // Pointers to block starts in val
-    std::vector<long long> blk_ptr;
+    std::vector<uint64_t> blk_handles;
+    std::vector<size_t> blk_sizes;
+    BlockArena<T> arena;
     
     // Cached block norms
     mutable std::vector<double> block_norms;
     mutable bool norms_valid = false;
 
-
-
     bool owns_graph = false;
+
+    // Buffer for remote assembly
+    struct PendingBlock {
+        int g_row;
+        int g_col;
+        int rows;
+        int cols;
+        AssemblyMode mode;
+        std::vector<T> data;
+    };
+    // Map: Owner -> (GlobalRow, GlobalCol) -> PendingBlock
+    std::map<int, std::map<std::pair<int, int>, PendingBlock>> remote_blocks;
 
     // Helper for squared norm
     static double get_sq_norm(const T& v) {
@@ -101,10 +111,11 @@ public:
         #pragma omp parallel for
         for (int i = 0; i < nnz; ++i) {
             double sum = 0.0;
-            long long start = blk_ptr[i];
-            long long end = blk_ptr[i+1];
-            for (long long k = start; k < end; ++k) {
-                sum += get_sq_norm(val[k]);
+            uint64_t handle = blk_handles[i];
+            T* data = arena.get_ptr(handle);
+            size_t size = blk_sizes[i];
+            for (size_t k = 0; k < size; ++k) {
+                sum += get_sq_norm(data[k]);
             }
             norms[i] = std::sqrt(sum);
         }
@@ -135,10 +146,14 @@ public:
         graph(other.graph), 
         row_ptr(std::move(other.row_ptr)),
         col_ind(std::move(other.col_ind)),
-        val(std::move(other.val)),
-        blk_ptr(std::move(other.blk_ptr)),
+        blk_handles(std::move(other.blk_handles)),
+        blk_sizes(std::move(other.blk_sizes)),
+        arena(std::move(other.arena)),
         remote_blocks(std::move(other.remote_blocks)),
-        owns_graph(other.owns_graph) 
+        owns_graph(other.owns_graph),
+
+        block_norms(std::move(other.block_norms)),
+        norms_valid(other.norms_valid)
     {
         other.graph = nullptr;
         other.owns_graph = false;
@@ -151,8 +166,9 @@ public:
             graph = other.graph;
             row_ptr = std::move(other.row_ptr);
             col_ind = std::move(other.col_ind);
-            val = std::move(other.val);
-            blk_ptr = std::move(other.blk_ptr);
+            blk_handles = std::move(other.blk_handles);
+            blk_sizes = std::move(other.blk_sizes);
+            arena = std::move(other.arena);
             remote_blocks = std::move(other.remote_blocks);
             owns_graph = other.owns_graph;
             
@@ -202,10 +218,30 @@ public:
         
         // 3. Calculate value size and block pointers
         int nnz = col_ind.size();
-        blk_ptr.resize(nnz + 1);
-        blk_ptr[0] = 0;
-        
+        blk_handles.resize(nnz);
+        blk_sizes.resize(nnz);
+
+        unsigned long long total_elements = 0;
         int n_owned = graph->owned_global_indices.size();
+        
+        // First pass: calculate size
+        #pragma omp parallel for reduction(+ : total_elements)
+        for (int i = 0; i < n_owned; ++i) {
+            int r_dim = graph->block_sizes[i];
+            int start = row_ptr[i];
+            int end = row_ptr[i+1];
+            int row_total_elements = 0;
+            for (int k = start; k < end; ++k) {
+                int col = col_ind[k];
+                int c_dim = graph->block_sizes[col];
+                row_total_elements += (unsigned long long)r_dim * c_dim;
+            }
+            total_elements += row_total_elements;
+        }
+        
+        arena.reserve(total_elements);
+        
+        // Second pass: allocate handles (Serial to ensure thread safety of arena.allocate)
         for (int i = 0; i < n_owned; ++i) {
 
             int start = row_ptr[i];
@@ -215,25 +251,14 @@ public:
                 int col = col_ind[k];
                 int r_dim = graph->block_sizes[i];
                 int c_dim = graph->block_sizes[col];
-                blk_ptr[k+1] = blk_ptr[k] + r_dim * c_dim;
+                int sz = r_dim * c_dim;
+                blk_handles[k] = arena.allocate(sz);
+                blk_sizes[k] = sz;
             }
         }
         
-        val.resize(blk_ptr[nnz], T(0));
         norms_valid = false;
     }
-
-    // Buffer for remote assembly
-    struct PendingBlock {
-        int g_row;
-        int g_col;
-        int rows;
-        int cols;
-        AssemblyMode mode;
-        std::vector<T> data;
-    };
-    // Map: Owner -> (GlobalRow, GlobalCol) -> PendingBlock
-    std::map<int, std::map<std::pair<int, int>, PendingBlock>> remote_blocks;
 
     // Add a block (local or remote)
     // Input data layout is specified by `layout`
@@ -444,9 +469,7 @@ public:
         // optimizable
         for (int k = start; k < end; ++k) {
             if (col_ind[k] == local_col) {
-                long long offset = blk_ptr[k];
-                // size_t size = blk_ptr[k+1] - offset; // This is total elements
-                T* target = val.data() + offset;
+                T* target = arena.get_ptr(blk_handles[k]);
                 
                 // Check dims
                 
@@ -529,7 +552,7 @@ public:
 
                 // remove to recover org Kernel switch
                 if (k + 1 < end) {
-                    _mm_prefetch((const char*)(val.data() + blk_ptr[k+1]), _MM_HINT_T0);
+                    _mm_prefetch((const char*)(arena.get_ptr(blk_handles[k+1])), _MM_HINT_T0);
                     int next_col = col_ind[k+1];
                     _mm_prefetch((const char*)(x.data.data() + graph->block_offsets[next_col]), _MM_HINT_T0);
                 }
@@ -537,7 +560,7 @@ public:
 
                 int col = col_ind[k];
                 int c_dim = graph->block_sizes[col];
-                const T* block_val = val.data() + blk_ptr[k];
+                const T* block_val = arena.get_ptr(blk_handles[k]);
                 const T* x_val = x.data.data() + graph->block_offsets[col]; // x.data includes ghosts
                 
                 // y_block += A_block * x_block
@@ -568,13 +591,13 @@ public:
             bool first = true;
             for (int k = start; k < end; ++k) {
                 if (k + 1 < end) {
-                    _mm_prefetch((const char*)(val.data() + blk_ptr[k+1]), _MM_HINT_T0);
+                    _mm_prefetch((const char*)(arena.get_ptr(blk_handles[k+1])), _MM_HINT_T0);
                     int next_col = col_ind[k+1];
                     _mm_prefetch((const char*)(&X(graph->block_offsets[next_col], 0)), _MM_HINT_T0);
                 }
                 int col = col_ind[k];
                 int c_dim = graph->block_sizes[col];
-                const T* block_val = val.data() + blk_ptr[k];
+                const T* block_val = arena.get_ptr(blk_handles[k]);
                 const T* x_ptr = &X(graph->block_offsets[col], 0);
                 int ldb = X.local_rows + X.ghost_rows;
                 
@@ -624,11 +647,11 @@ public:
                 for (int k = start; k < end; ++k) {
                     int col = col_ind[k];
                     int c_dim = graph->block_sizes[col];
-                    const T* block_val = val.data() + blk_ptr[k];
+                    const T* block_val = arena.get_ptr(blk_handles[k]);
                     T* y_target = y_local.data() + graph->block_offsets[col];
                     
                     if (k + 1 < end) {
-                        _mm_prefetch((const char*)(val.data() + blk_ptr[k+1]), _MM_HINT_T0);
+                        _mm_prefetch((const char*)(arena.get_ptr(blk_handles[k+1])), _MM_HINT_T0);
                         int next_col = col_ind[k+1];
                         _mm_prefetch((const char*)(y_local.data() + graph->block_offsets[next_col]), _MM_HINT_T0);
                     }
@@ -675,7 +698,7 @@ public:
                 for (int k = start; k < end; ++k) {
                     int col = col_ind[k];
                     int c_dim = graph->block_sizes[col];
-                    const T* block_val = val.data() + blk_ptr[k];
+                    const T* block_val = arena.get_ptr(blk_handles[k]);
                     T* y_ptr = &Y_local[col]; // This is wrong for column-major
                     // Correct pointer:
                     T* y_target = &Y_local[graph->block_offsets[col]]; 
@@ -686,7 +709,7 @@ public:
                     // Y_target is c_dim x num_vecs.
                     
                     if (k + 1 < end) {
-                        _mm_prefetch((const char*)(val.data() + blk_ptr[k+1]), _MM_HINT_T0);
+                        _mm_prefetch((const char*)(arena.get_ptr(blk_handles[k+1])), _MM_HINT_T0);
                         int next_col = col_ind[k+1];
                         _mm_prefetch((const char*)(Y_local.data() + graph->block_offsets[next_col]), _MM_HINT_T0);
                     }
@@ -708,8 +731,11 @@ public:
     // Utilities
     void scale(T alpha) {
         #pragma omp parallel for
-        for (size_t i = 0; i < val.size(); ++i) {
-            val[i] *= alpha;
+        for (size_t i = 0; i < blk_handles.size(); ++i) {
+            T* block = arena.get_ptr(blk_handles[i]);
+            for (size_t j = 0; j < blk_sizes[i]; ++j) {
+                block[j] *= alpha;
+            }
         }
         // Norms are scaled by abs(alpha)
         if (norms_valid) {
@@ -720,6 +746,7 @@ public:
     }
 
     void copy_from(const BlockSpMat<T, Kernel>& other) {
+        // this is used for copying the data from other blocks with the same graph
         // If graphs are different, we should at least check compatibility
         if (graph != other.graph) {
             // Check if owned indices and block sizes match
@@ -729,10 +756,16 @@ public:
             }
         }
 
-        if (val.size() != other.val.size()) {
-            throw std::runtime_error("Matrix value size mismatch in copy_from");
+        int n_rows = row_ptr.size() - 1;
+        for (int i = 0; i < n_rows; ++i){
+            int start = row_ptr[i];
+            int end = row_ptr[i+1];
+            for (int k = start; k < end; ++k){
+                T* block_val = arena.get_ptr(blk_handles[k]);
+                T* block_val_other = other.arena.get_ptr(other.blk_handles[k]);
+                std::memcpy(block_val, block_val_other, blk_sizes[k] * sizeof(T));
+            }
         }
-        std::memcpy(val.data(), other.val.data(), val.size() * sizeof(T));
         norms_valid = false;
     }
 
@@ -742,37 +775,59 @@ public:
             this->scale(beta);
             return;
         }
+
         if (beta == T(0)) {
             if (this->graph == X.graph) {
                 // Same graph, just copy values and scale
-                if (this->val.size() != X.val.size()) {
-                     throw std::runtime_error("Matrix structure mismatch in axpby (beta=0, same graph)");
-                }
                 #pragma omp parallel for
-                for (size_t i = 0; i < this->val.size(); ++i) {
-                    this->val[i] = alpha * X.val[i];
+                for (size_t i = 0; i < this->blk_handles.size(); ++i) {
+                    T* block = this->arena.get_ptr(this->blk_handles[i]);
+                    const T* block_x = X.arena.get_ptr(X.blk_handles[i]);
+                    for (size_t j = 0; j < this->blk_sizes[i]; ++j) {
+                        block[j] = alpha * block_x[j];
+                    }
                 }
-                this->norms_valid = false;
+                this->norms_valid = X.norms_valid;
+
+                if (this->norms_valid) {
+                    #pragma omp parallel for
+                    for (size_t i = 0; i < this->block_norms.size(); ++i) {
+                        this->block_norms[i] = X.block_norms[i] * alpha;
+                    }
+                }
                 return;
             } else {
                  // Check if structures are identical
                  bool same_structure = (this->row_ptr == X.row_ptr && this->col_ind == X.col_ind);
                  if (same_structure) {
-                     // If structure (topology) is same but graphs differ, block sizes might differ.
-                     if (this->val.size() != X.val.size()) {
-                         throw std::runtime_error("Matrix dimension mismatch in axpby (same topology but different block sizes)");
-                     }
-                     #pragma omp parallel for
-                     for (size_t i = 0; i < this->val.size(); ++i) {
-                         this->val[i] = alpha * X.val[i];
-                     }
-                     this->norms_valid = false;
-                     return;
+                    // If structure (topology) is same but graphs differ, block sizes might differ.
+                    // if (this->val.size() != X.val.size()) {
+                    //     throw std::runtime_error("Matrix dimension mismatch in axpby (same topology but different block sizes)");
+                    // }
+                    #pragma omp parallel for
+                    for (size_t i = 0; i < this->blk_handles.size(); ++i) {
+                        T* block = this->arena.get_ptr(this->blk_handles[i]);
+                        const T* block_x = X.arena.get_ptr(X.blk_handles[i]);
+                        for (size_t j = 0; j < this->blk_sizes[i]; ++j) {
+                            block[j] = alpha * block_x[j];
+                        }
+                    }
+                    this->norms_valid = X.norms_valid;
+
+                    if (this->norms_valid) {
+                        #pragma omp parallel for
+                        for (size_t i = 0; i < this->block_norms.size(); ++i) {
+                            this->block_norms[i] = X.block_norms[i] * alpha;
+                        }
+                    }
+                    return;
                  } else {
-                     // Reallocation Required
-                     *this = X.duplicate(); // Deep copy
-                     this->scale(alpha);
-                     return;
+                    // Reallocation Required
+                    // optimizable, we can just copy the data using the available mem without reallocation,
+                    // and allocate only needed space, and then do iterative copy.
+                    *this = X.duplicate(); // Deep copy
+                    this->scale(alpha);
+                    return;
                  }
             }
         }
@@ -793,23 +848,16 @@ public:
                      same_structure = true;
                  }
              }
-        } else {
-             if (this->row_ptr == X.row_ptr && this->col_ind == X.col_ind) {
-                 // Even if structure is same, we must ensure the mapping is same.
-                 // If graphs differ, local index 'c' might mean different global columns.
-                 // So we CANNOT assume same_structure implies safe to merge unless we verify mapping.
-                 // To be safe:
-                 same_structure = false; 
-             }
         }
 
         if (same_structure) {
-            if (this->val.size() != X.val.size()) {
-                throw std::runtime_error("Matrix structure mismatch in axpby (same structure check passed)");
-            }
             #pragma omp parallel for
-            for (size_t i = 0; i < this->val.size(); ++i) {
-                this->val[i] = alpha * X.val[i] + beta * this->val[i];
+            for (size_t i = 0; i < this->blk_handles.size(); ++i) {
+                T* block = this->arena.get_ptr(this->blk_handles[i]);
+                const T* block_x = X.arena.get_ptr(X.blk_handles[i]);
+                for (size_t j = 0; j < this->blk_sizes[i]; ++j) {
+                    block[j] = alpha * block_x[j] + beta * block[j];
+                }
             }
             this->norms_valid = false;
             return;
@@ -857,67 +905,66 @@ public:
         if (x_is_subset) {
             // Check sparsity subset
             bool sparsity_subset = true;
-             #pragma omp parallel for reduction(&&:sparsity_subset)
-             for (int i = 0; i < n_rows; ++i) {
-                 if (!sparsity_subset) continue;
-                 int y_start = this->row_ptr[i];
-                 int y_end = this->row_ptr[i+1];
-                 int x_start = X.row_ptr[i];
-                 int x_end = X.row_ptr[i+1];
-                 
-                 int y_k = y_start;
-                 for (int x_k = x_start; x_k < x_end; ++x_k) {
-                     int x_col_local = X.col_ind[x_k];
-                     int target_col = x_to_this[x_col_local];
-                     
-                     while (y_k < y_end && this->col_ind[y_k] < target_col) {
-                         y_k++;
-                     }
-                     if (y_k == y_end || this->col_ind[y_k] != target_col) {
-                         sparsity_subset = false;
-                         break;
-                     }
-                 }
-             }
-             
-             // Check globally if we can use the fast path (subset)
-             int local_ss = sparsity_subset ? 1 : 0;
-             int global_ss = 0;
-             MPI_Allreduce(&local_ss, &global_ss, 1, MPI_INT, MPI_MIN, this->graph->comm);
-             
-             if (global_ss == 1) {
-                 // Safe to proceed with in-place addition
-                 this->scale(beta);
-                 #pragma omp parallel for
-                 for (int i = 0; i < n_rows; ++i) {
-                     int y_start = this->row_ptr[i];
-                     int y_end = this->row_ptr[i+1];
-                     int x_start = X.row_ptr[i];
-                     int x_end = X.row_ptr[i+1];
-                     
-                     int y_k = y_start;
-                     for (int x_k = x_start; x_k < x_end; ++x_k) {
-                         int x_col_local = X.col_ind[x_k];
-                         int target_col = x_to_this[x_col_local];
-                         
-                         while (y_k < y_end && this->col_ind[y_k] < target_col) {
-                             y_k++;
-                         }
-                         // Guaranteed found
-                         long long y_offset = this->blk_ptr[y_k];
-                         long long x_offset = X.blk_ptr[x_k];
-                         int r_dim = this->graph->block_sizes[i];
-                         int c_dim = this->graph->block_sizes[target_col];
-                         int size = r_dim * c_dim;
-                         
-                         for (int j = 0; j < size; ++j) {
-                             this->val[y_offset + j] += alpha * X.val[x_offset + j];
-                         }
-                     }
-                 }
-                 this->norms_valid = false;
-                 return;
-             }
+            #pragma omp parallel for reduction(&&:sparsity_subset)
+            for (int i = 0; i < n_rows; ++i) {
+                if (!sparsity_subset) continue;
+                int y_start = this->row_ptr[i];
+                int y_end = this->row_ptr[i+1];
+                int x_start = X.row_ptr[i];
+                int x_end = X.row_ptr[i+1];
+                
+                int y_k = y_start;
+                for (int x_k = x_start; x_k < x_end; ++x_k) {
+                    int x_col_local = X.col_ind[x_k];
+                    int target_col = x_to_this[x_col_local];
+                    
+                    while (y_k < y_end && this->col_ind[y_k] < target_col) {
+                        y_k++;
+                    }
+                    if (y_k == y_end || this->col_ind[y_k] != target_col) {
+                        sparsity_subset = false;
+                        break;
+                    }
+                }
+            }
+            
+            // Check globally if we can use the fast path (subset)
+            int local_ss = sparsity_subset ? 1 : 0;
+            int global_ss = 0;
+            MPI_Allreduce(&local_ss, &global_ss, 1, MPI_INT, MPI_MIN, this->graph->comm);
+            // TODO: optimizable, seems we can merge if the local_ss is 1, and for mismatched case, we only need to reallocate locally
+            // this is very tricky.
+            if (global_ss == 1) {
+                // Safe to proceed with in-place addition
+                this->scale(beta);
+                #pragma omp parallel for
+                for (int i = 0; i < n_rows; ++i) {
+                    int y_start = this->row_ptr[i];
+                    int y_end = this->row_ptr[i+1];
+                    int x_start = X.row_ptr[i];
+                    int x_end = X.row_ptr[i+1];
+                    
+                    int y_k = y_start;
+                    for (int x_k = x_start; x_k < x_end; ++x_k) {
+                        int x_col_local = X.col_ind[x_k];
+                        int target_col = x_to_this[x_col_local];
+                        
+                        while (y_k < y_end && this->col_ind[y_k] < target_col) {
+                            y_k++;
+                        }
+                        // Guaranteed found
+                        T* y_ptr = this->arena.get_ptr(this->blk_handles[y_k]);
+                        T* x_ptr = X.arena.get_ptr(X.blk_handles[x_k]);
+                        int size = this->blk_sizes[y_k];
+                        
+                        for (int j = 0; j < size; ++j) {
+                            y_ptr[j] += alpha * x_ptr[j];
+                        }
+                    }
+                }
+                this->norms_valid = false;
+                return;
+            }
         }
         
         // Path C: General Case (Union)
@@ -928,7 +975,6 @@ public:
         new_row_ptr[0] = 0;
         
         std::vector<int> row_nnz(n_rows);
-        std::vector<T> new_val;
         
         #pragma omp parallel for
         for (int i = 0; i < n_rows; ++i) {
@@ -1031,8 +1077,8 @@ public:
         new_graph->get_matrix_structure(new_row_ptr, new_col_ind);
         
         int total_blocks_new = new_col_ind.size();
-        std::vector<long long> new_blk_ptr(total_blocks_new + 1);
-        new_blk_ptr[0] = 0;
+        std::vector<uint64_t> new_blk_handles(total_blocks_new);
+        std::vector<size_t> new_blk_sizes(total_blocks_new);
         
         std::vector<size_t> row_val_size_new(n_rows);
         
@@ -1053,23 +1099,62 @@ public:
         std::vector<long long> row_val_offset_new(n_rows + 1);
         row_val_offset_new[0] = 0;
         for(int i=0; i<n_rows; ++i) row_val_offset_new[i+1] = row_val_offset_new[i] + row_val_size_new[i];
+        // opt: How to reuse the available memory without reallocating for them all?
+        arena.reserve(row_val_offset_new.back());
         
+        // Pass 1: Map existing handles and mark new ones (Parallel)
         #pragma omp parallel for
         for (int i = 0; i < n_rows; ++i) {
             int start = new_row_ptr[i];
             int end = new_row_ptr[i+1];
-            long long offset = row_val_offset_new[i];
             int r_dim = new_graph->block_sizes[i];
+            
+            int this_start = this->row_ptr[i];
+            int this_end = this->row_ptr[i+1];
+            
+            int tk = this_start;
+
             for(int k=start; k<end; ++k) {
-                new_blk_ptr[k] = offset;
                 int col = new_col_ind[k];
                 int c_dim = new_graph->block_sizes[col];
-                offset += r_dim * c_dim;
+                new_blk_sizes[k] = r_dim * c_dim;
+                
+                int g_col_new = new_graph->get_global_index(col);
+                
+                // Advance tk to find match or go past
+                // Both sequences are sorted by global column index
+                while (tk < this_end) {
+                    int this_col = this->col_ind[tk];
+                    int g_col_old = this->graph->get_global_index(this_col);
+                    if (g_col_old < g_col_new) {
+                        tk++;
+                    } else {
+                        break;
+                    }
+                }
+                
+                bool found = false;
+                if (tk < this_end) {
+                    int this_col = this->col_ind[tk];
+                    int g_col_old = this->graph->get_global_index(this_col);
+                    if (g_col_old == g_col_new) {
+                        new_blk_handles[k] = this->blk_handles[tk];
+                        found = true;
+                    }
+                }
+                
+                if (!found) {
+                    new_blk_handles[k] = UINT64_MAX; // Sentinel for "needs allocation"
+                }
             }
         }
-        new_blk_ptr[total_blocks_new] = row_val_offset_new[n_rows];
-        
-        new_val.resize(new_blk_ptr[total_blocks_new]);
+
+        // Pass 2: Allocate new blocks (Serial, to avoid race in arena)
+        for (size_t k = 0; k < new_blk_handles.size(); ++k) {
+            if (new_blk_handles[k] == UINT64_MAX) {
+                new_blk_handles[k] = arena.allocate(new_blk_sizes[k]);
+            }
+        }
         
         // 5. Populate Values
         // We must respect the structure of new_graph (new_col_ind).
@@ -1077,7 +1162,7 @@ public:
         // We need to map each merged block to its correct position in new_val.
         
         // Initialize new_val to 0 because we might accumulate (e.g. if inputs have duplicate global cols)
-        std::fill(new_val.begin(), new_val.end(), T(0));
+        // std::fill(new_val.begin(), new_val.end(), T(0));
         
         #pragma omp parallel for
         for (int i = 0; i < n_rows; ++i) {
@@ -1139,26 +1224,20 @@ public:
                 }
                 
                 int k = it->second;
-                long long dest_offset = new_blk_ptr[k];
-                int r_dim = new_graph->block_sizes[i];
-                int local_col = new_col_ind[k];
-                int c_dim = new_graph->block_sizes[local_col];
-                size_t blk_sz = (size_t)r_dim * c_dim;
+                size_t blk_sz = new_blk_sizes[k];
                 
-                T* dest_ptr = new_val.data() + dest_offset;
+                T* y_ptr = arena.get_ptr(new_blk_handles[k]);
                 
                 if (use_y && use_x) {
-                    const T* y_ptr = this->val.data() + this->blk_ptr[y_k];
-                    const T* x_ptr = X.val.data() + X.blk_ptr[x_k];
-                    for(size_t j=0; j<blk_sz; ++j) dest_ptr[j] += alpha * x_ptr[j] + beta * y_ptr[j];
+                    const T* x_ptr = X.arena.get_ptr(X.blk_handles[x_k]);
+                    for(size_t j=0; j<blk_sz; ++j) y_ptr[j] = alpha * x_ptr[j] + beta * y_ptr[j];
                     y_k++; x_k++;
                 } else if (use_y) {
-                    const T* y_ptr = this->val.data() + this->blk_ptr[y_k];
-                    for(size_t j=0; j<blk_sz; ++j) dest_ptr[j] += beta * y_ptr[j];
+                    for(size_t j=0; j<blk_sz; ++j) y_ptr[j] = beta * y_ptr[j];
                     y_k++;
                 } else {
-                    const T* x_ptr = X.val.data() + X.blk_ptr[x_k];
-                    for(size_t j=0; j<blk_sz; ++j) dest_ptr[j] += alpha * x_ptr[j];
+                    const T* x_ptr = X.arena.get_ptr(X.blk_handles[x_k]);
+                    for(size_t j=0; j<blk_sz; ++j) y_ptr[j] = alpha * x_ptr[j];
                     x_k++;
                 }
             }
@@ -1167,8 +1246,8 @@ public:
         // Update this
         this->row_ptr = std::move(new_row_ptr);
         this->col_ind = std::move(new_col_ind);
-        this->val = std::move(new_val);
-        this->blk_ptr = std::move(new_blk_ptr);
+        this->blk_handles = std::move(new_blk_handles);
+        this->blk_sizes = std::move(new_blk_sizes);
         this->norms_valid = false;
         
         if (this->owns_graph && this->graph) delete this->graph;
@@ -1200,7 +1279,7 @@ public:
                 
                 if (graph->get_global_index(local_col) == global_row) {
                     // Found diagonal block
-                    long long offset = blk_ptr[k];
+                    T* target = arena.get_ptr(blk_handles[k]);
                     int r_dim = graph->block_sizes[i];
                     int c_dim = graph->block_sizes[local_col];
                     
@@ -1210,7 +1289,7 @@ public:
                     
                     int min_dim = std::min(r_dim, c_dim);
                     for (int j = 0; j < min_dim; ++j) {
-                        val[offset + j * r_dim + j] += alpha;
+                        target[j * r_dim + j] += alpha;
                     }
                     break; 
                 }
@@ -1239,13 +1318,13 @@ public:
                 int local_col = col_ind[k];
                 if (graph->get_global_index(local_col) == global_row) {
                     // Found diagonal block
-                    long long offset = blk_ptr[k];
+                    T* target = arena.get_ptr(blk_handles[k]);
                     int r_dim = graph->block_sizes[i];
                     int c_dim = graph->block_sizes[local_col];
                     
                     int min_dim = std::min(r_dim, c_dim);
                     for (int j = 0; j < min_dim; ++j) {
-                        val[offset + j * r_dim + j] += v_val;
+                        target[j * r_dim + j] += v_val;
                     }
                     break; 
                 }
@@ -1259,7 +1338,8 @@ public:
     // Result C has same structure as H (this).
     void commutator_diagonal(const DistVector<T>& diag, BlockSpMat<T, Kernel>& result) {
         // Ensure result has same structure
-        if (result.val.size() != val.size()) {
+        // if (result.val.size() != val.size()) {
+        if (result.blk_handles.size() != blk_handles.size()) {
             result.allocate_from_graph(); // Or throw
         }
         
@@ -1286,13 +1366,9 @@ public:
                 
                 T diff = R_j - R_i;
                 
-                long long offset = blk_ptr[k];
-                int r_dim = graph->block_sizes[i];
-                int c_dim = graph->block_sizes[col];
-                int block_size = r_dim * c_dim;
-                
-                const T* H_ptr = val.data() + offset;
-                T* C_ptr = result.val.data() + offset;
+                int block_size = blk_sizes[k];
+                const T* H_ptr = arena.get_ptr(blk_handles[k]);
+                T* C_ptr = result.arena.get_ptr(result.blk_handles[k]);
                 
                 for (int b = 0; b < block_size; ++b) {
                     C_ptr[b] = H_ptr[b] * diff;
@@ -1305,6 +1381,8 @@ public:
         if (threshold <= 0.0) return;
         
         // Ensure norms are valid (we need them for filtering)
+        // need a major refactoring here, the logic will be totally different,
+        // we can have much more efficient practice that avoid any reallocation.
         get_block_norms();
         
         // Detach graph if not owned
@@ -1318,14 +1396,13 @@ public:
         new_row_ptr[0] = 0;
         
         std::vector<int> new_col_ind;
-        std::vector<T> new_val;
-        std::vector<long long> new_blk_ptr;
-        new_blk_ptr.push_back(0);
+        std::vector<uint64_t> new_blk_handles;
+        std::vector<size_t> new_blk_sizes;
         
         // Estimate size to reserve
         new_col_ind.reserve(col_ind.size());
-        new_val.reserve(val.size());
-        new_blk_ptr.reserve(blk_ptr.size());
+        new_blk_handles.reserve(blk_handles.size());
+        new_blk_sizes.reserve(blk_sizes.size());
         
         std::vector<double> new_norms;
         new_norms.reserve(block_norms.size());
@@ -1338,15 +1415,12 @@ public:
                 if (block_norms[k] >= threshold) {
                     int col = col_ind[k];
                     new_col_ind.push_back(col);
-                    
-                    long long offset = blk_ptr[k];
-                    size_t size = blk_ptr[k+1] - offset;
-                    
-                    long long new_offset = new_val.size();
-                    new_val.insert(new_val.end(), val.begin() + offset, val.begin() + offset + size);
-                    new_blk_ptr.push_back(new_val.size());
-                    
+                    new_blk_handles.push_back(blk_handles[k]);
+                    new_blk_sizes.push_back(blk_sizes[k]);
                     new_norms.push_back(block_norms[k]);
+                } else {
+                    // Drop -> Free
+                    arena.free(blk_handles[k], blk_sizes[k]);
                 }
             }
             new_row_ptr[i+1] = new_col_ind.size();
@@ -1355,20 +1429,62 @@ public:
         // Swap
         row_ptr = std::move(new_row_ptr);
         col_ind = std::move(new_col_ind);
-        val = std::move(new_val);
-        blk_ptr = std::move(new_blk_ptr);
+        blk_handles = std::move(new_blk_handles);
+        blk_sizes = std::move(new_blk_sizes);
         block_norms = std::move(new_norms);
         norms_valid = true;
         
         // Sync Graph
-        graph->adj_ptr = row_ptr;
-        graph->adj_ind = col_ind;
+
+        // Rebuild Graph to update communication pattern
+        // 1. Collect global indices for the new adjacency list
+        std::vector<std::vector<int>> new_adj_global(n_rows);
+        
+        #pragma omp parallel for
+        for (int i = 0; i < n_rows; ++i) {
+            int start = row_ptr[i];
+            int end = row_ptr[i+1];
+            new_adj_global[i].reserve(end - start);
+            for (int k = start; k < end; ++k) {
+                int local_col = col_ind[k];
+                new_adj_global[i].push_back(graph->get_global_index(local_col));
+            }
+        }
+        
+        // 2. Construct new DistGraph
+        DistGraph* new_graph = new DistGraph(graph->comm);
+        // We need to pass the owned block sizes. 
+        // graph->block_sizes contains owned + ghosts.
+        int n_owned = graph->owned_global_indices.size();
+        std::vector<int> owned_block_sizes(n_owned);
+        for(int i=0; i<n_owned; ++i) owned_block_sizes[i] = graph->block_sizes[i];
+        
+        new_graph->construct_distributed(graph->owned_global_indices, owned_block_sizes, new_adj_global);
+        
+        // 3. Remap col_ind to new local indices
+        // new_col_ind currently holds OLD local indices.
+        // We need to map: Old Local -> Global -> New Local
+        
+        #pragma omp parallel for
+        for (size_t k = 0; k < col_ind.size(); ++k) {
+            int old_local = col_ind[k];
+            int global_col = graph->get_global_index(old_local);
+            
+            // Use .at() to ensure it exists (throws if not)
+            // However, .at() is not const-qualified in all C++ versions? No, it is.
+            // But to be safe in OMP, ensure no writes happen to map.
+            col_ind[k] = new_graph->global_to_local.at(global_col);
+        }
+        
+        // 4. Replace Graph
+        if (this->owns_graph && this->graph) delete this->graph;
+        this->graph = new_graph;
+        this->owns_graph = true;
     }
 
     // Map: Global Row of B -> List of (Global Col of B, Norm)
 
     BlockSpMat spmm(const BlockSpMat& B, double threshold, bool transA = false, bool transB = false) const {
-        
         if (transA) {
             BlockSpMat A_T = this->transpose();
             return A_T.spmm(B, threshold, false, transB);
@@ -1425,6 +1541,9 @@ public:
         c_graph->construct_distributed(graph->owned_global_indices, graph->block_sizes, adj);
 
         // [FIX START] Backfill block sizes for ghost columns in C
+        if (graph->rank == 0) {
+            std::cout << "Backfill block sizes for ghost columns in C" << std::endl;
+        }
         {
             // ghost_sizes contains {global_col -> size} for remote blocks
             // B.graph contains sizes for local blocks
@@ -1465,7 +1584,6 @@ public:
         
         BlockSpMat C(c_graph);
         C.owns_graph = true;
-        std::fill(C.val.begin(), C.val.end(), T(0));
         
         // 5. Numeric Phase (GEMM)
         numeric_multiply(B, ghost_rows, C, threshold, A_norms, B_local_norms);
@@ -1557,9 +1675,9 @@ public:
                 meta_ptr[3] = r_dim;
                 current_counts[owner] += 4;
                 
-                long long offset = blk_ptr[k];
+                // long long offset = blk_ptr[k];
                 size_t count = r_dim * c_dim;
-                std::memcpy(send_val.data() + sdispls_data[owner] + current_data_counts[owner], val.data() + offset, count * sizeof(T));
+                std::memcpy(send_val.data() + sdispls_data[owner] + current_data_counts[owner], arena.get_ptr(blk_handles[k]), count * sizeof(T));
                 current_data_counts[owner] += count;
             }
         }
@@ -1744,8 +1862,8 @@ public:
                 int c_dim = graph->block_sizes[col];
                 int col_start_idx = graph->block_offsets[col] + 1; // 1-based
                 
-                long long offset = blk_ptr[k];
-                const T* block_data = val.data() + offset;
+                // long long offset = blk_ptr[k];
+                const T* block_data = arena.get_ptr(blk_handles[k]);
                 
                 // Block is stored in ColMajor
                 for (int c = 0; c < c_dim; ++c) {
@@ -1834,7 +1952,7 @@ public:
 
         // 5. Counting pass for replies
         std::vector<double> B_norms = B.compute_block_norms();
-        std::vector<int> send_reply_bytes(size, 0);
+        std::vector<size_t> send_reply_bytes(size, 0);
         int* ptr = recv_req_buf.data();
         for(int i=0; i<size; ++i) {
             int count = recv_req_counts[i];
@@ -1850,14 +1968,14 @@ public:
         }
 
         // 6. Exchange reply counts
-        std::vector<int> recv_reply_bytes(size);
+        std::vector<size_t> recv_reply_bytes(size);
         if (graph->size > 1) {
-            MPI_Alltoall(send_reply_bytes.data(), 1, MPI_INT, recv_reply_bytes.data(), 1, MPI_INT, graph->comm);
+            MPI_Alltoall(send_reply_bytes.data(), sizeof(size_t), MPI_BYTE, recv_reply_bytes.data(), sizeof(size_t), MPI_BYTE, graph->comm);
         } else {
             recv_reply_bytes = send_reply_bytes;
         }
 
-        std::vector<int> sdispls_reply(size + 1, 0), rdispls_reply(size + 1, 0);
+        std::vector<size_t> sdispls_reply(size + 1, 0), rdispls_reply(size + 1, 0);
         for(int i=0; i<size; ++i) {
             sdispls_reply[i+1] = sdispls_reply[i] + send_reply_bytes[i];
             rdispls_reply[i+1] = rdispls_reply[i] + recv_reply_bytes[i];
@@ -1893,8 +2011,8 @@ public:
         // 8. Exchange replies
         std::vector<char> recv_reply_blob(rdispls_reply[size]);
         if (graph->size > 1) {
-            MPI_Alltoallv(send_reply_blob.data(), send_reply_bytes.data(), sdispls_reply.data(), MPI_BYTE,
-                          recv_reply_blob.data(), recv_reply_bytes.data(), rdispls_reply.data(), MPI_BYTE, graph->comm);
+            safe_alltoallv(send_reply_blob.data(), send_reply_bytes, sdispls_reply, MPI_BYTE,
+                          recv_reply_blob.data(), recv_reply_bytes, rdispls_reply, MPI_BYTE, graph->comm);
         } else {
             recv_reply_blob = send_reply_blob;
         }
@@ -2163,14 +2281,14 @@ public:
                         if (graph->get_global_index(col_ind[k]) == g_col) {
                             int r_dim = graph->block_sizes[l_row];
                             int c_dim = graph->block_sizes[col_ind[k]];
-                            long long offset = blk_ptr[k];
+                            // long long offset = blk_ptr[k];
                             size_t n_elem = r_dim * c_dim;
                             
                             std::memcpy(blob_ptr, &g_row, sizeof(int)); blob_ptr += sizeof(int);
                             std::memcpy(blob_ptr, &g_col, sizeof(int)); blob_ptr += sizeof(int);
                             std::memcpy(blob_ptr, &r_dim, sizeof(int)); blob_ptr += sizeof(int);
                             std::memcpy(blob_ptr, &c_dim, sizeof(int)); blob_ptr += sizeof(int);
-                            std::memcpy(blob_ptr, val.data() + offset, n_elem * sizeof(T)); blob_ptr += n_elem * sizeof(T);
+                            std::memcpy(blob_ptr, arena.get_ptr(blk_handles[k]), n_elem * sizeof(T)); blob_ptr += n_elem * sizeof(T);
                             break;
                         }
                     }
@@ -2225,7 +2343,7 @@ public:
         
         struct HashEntry {
             int key; 
-            long long value;
+            uint64_t value; // Changed from long long to uint64_t for handle
             int tag; 
         };
         
@@ -2252,7 +2370,7 @@ public:
                 for(int k=c_start; k<c_end; ++k) {
                     int l_col = C.col_ind[k];
                     int g_col = C.graph->get_global_index(l_col);
-                    long long offset = C.blk_ptr[k];
+                    uint64_t offset = C.blk_handles[k]; // Store handle instead of offset
                     
                     size_t h = (size_t)g_col & HASH_MASK;
                     size_t count = 0;
@@ -2269,15 +2387,16 @@ public:
                 int a_end = row_ptr[i+1];
                 int r_dim = graph->block_sizes[i];
                 
-                // Dynamic threshold for this row
-                // row_count is number of blocks in C's row i
-                int row_count = c_end - c_start;
-                double row_eps = threshold / std::max(1, row_count);
-                
                 for (int k = a_start; k < a_end; ++k) {
+
+                    // Dynamic threshold for this row
+                    // row_count is number of blocks in A's row i
+                    int row_count = a_end - a_start;
+                    double row_eps = threshold / std::max(1, row_count);
+                    
                     int l_col_A = col_ind[k];
                     int g_col_A = graph->get_global_index(l_col_A);
-                    const T* a_val = val.data() + blk_ptr[k];
+                    const T* a_val = arena.get_ptr(blk_handles[k]);
                     int inner_dim = graph->block_sizes[l_col_A];
                     double norm_A = A_norms[k];
                     
@@ -2290,7 +2409,7 @@ public:
                             
                             int l_col_B = B.col_ind[j];
                             int g_col_B = B.graph->get_global_index(l_col_B);
-                            const T* b_val = B.val.data() + B.blk_ptr[j];
+                            const T* b_val = B.arena.get_ptr(B.blk_handles[j]);
 
                             if (norm_A * norm_B < row_eps) continue;
 
@@ -2300,7 +2419,7 @@ public:
                             size_t count = 0;
                             while(table[h].tag == tag) {
                                 if (table[h].key == g_col_B) {
-                                    T* c_val = C.val.data() + table[h].value;
+                                    T* c_val = C.arena.get_ptr(table[h].value);
                                     SmartKernel<T>::gemm(r_dim, c_dim, inner_dim, T(1), a_val, r_dim, b_val, inner_dim, T(1), c_val, r_dim);
                                     break;
                                 }
@@ -2325,7 +2444,7 @@ public:
                                 size_t count = 0;
                                 while(table[h].tag == tag) {
                                     if (table[h].key == g_col_B) {
-                                        T* c_val = C.val.data() + table[h].value;
+                                        T* c_val = C.arena.get_ptr(table[h].value);
                                         SmartKernel<T>::gemm(r_dim, c_dim, inner_dim, T(1), a_val, r_dim, b_val, inner_dim, T(1), c_val, r_dim);
                                         break;
                                     }
@@ -2422,8 +2541,7 @@ public:
                         total_blocks++;
                         int r_dim = graph->block_sizes[lid];
                         int c_dim = graph->block_sizes[col_lid];
-                        long long offset = blk_ptr[k];
-                        size_t size = blk_ptr[k+1] - offset;
+                        size_t size = blk_sizes[k];
                         
                         size_t old_size = resp_buffer.size();
                         resp_buffer.resize(old_size + 4*sizeof(int) + size*sizeof(T));
@@ -2433,7 +2551,7 @@ public:
                         std::memcpy(b_ptr, &col_gid, sizeof(int)); b_ptr += sizeof(int);
                         std::memcpy(b_ptr, &r_dim, sizeof(int)); b_ptr += sizeof(int);
                         std::memcpy(b_ptr, &c_dim, sizeof(int)); b_ptr += sizeof(int);
-                        std::memcpy(b_ptr, val.data() + offset, size*sizeof(T));
+                        std::memcpy(b_ptr, arena.get_ptr(blk_handles[k]), size*sizeof(T));
                     }
                 }
             }
@@ -2501,10 +2619,11 @@ public:
                     bd.r_dim = graph->block_sizes[lid];
                     bd.c_dim = graph->block_sizes[col_lid];
                     
-                    long long offset = blk_ptr[k];
-                    size_t size = blk_ptr[k+1] - offset;
+                    // long long offset = blk_ptr[k];
+                    // size_t size = blk_ptr[k+1] - offset;
+                    size_t size = blk_sizes[k];
                     bd.data.resize(size);
-                    std::memcpy(bd.data.data(), val.data() + offset, size * sizeof(T));
+                    std::memcpy(bd.data.data(), arena.get_ptr(blk_handles[k]), size * sizeof(T));
                     
                     ctx.blocks.push_back(std::move(bd));
                 }
@@ -2731,7 +2850,7 @@ public:
                 int c_dim = submat.graph->block_sizes[col];
                 int global_col = global_indices[col];
                 
-                const T* data = submat.val.data() + submat.blk_ptr[k];
+                const T* data = submat.arena.get_ptr(submat.blk_handles[k]);
                 
                 // Use add_block with INSERT mode. 
                 // It handles local update and remote buffering.
@@ -2773,7 +2892,8 @@ public:
                 int c_dim = graph->block_sizes[col];
                 int col_offset = graph->block_offsets[col];
                 
-                const T* data = val.data() + blk_ptr[k];
+                // const T* data = val.data() + blk_ptr[k];
+                const T* data = arena.get_ptr(blk_handles[k]);
                 
                 // Copy block to dense (ColMajor block to RowMajor dense)
                 for(int c=0; c<c_dim; ++c) {
@@ -2814,7 +2934,8 @@ public:
                 int c_dim = graph->block_sizes[col];
                 int col_offset = graph->block_offsets[col];
                 
-                T* data = val.data() + blk_ptr[k];
+                // T* data = val.data() + blk_ptr[k];
+                T* data = arena.get_ptr(blk_handles[k]);
                 
                 // Copy dense to block (RowMajor dense to ColMajor block)
                 for(int c=0; c<c_dim; ++c) {
