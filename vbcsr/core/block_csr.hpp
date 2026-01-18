@@ -787,19 +787,42 @@ public:
                         block[j] = alpha * block_x[j];
                     }
                 }
-                this->norms_valid = X.norms_valid;
+                this->block_norms = X.block_norms;
+                this->norms_valid = false;
+                bool update_norm = false;
+                double alpha_real = 0;
 
-                if (this->norms_valid) {
-                    #pragma omp parallel for
-                    for (size_t i = 0; i < this->block_norms.size(); ++i) {
-                        this->block_norms[i] = X.block_norms[i] * alpha;
+                if (X.norms_valid) {
+                    if (alpha == T(1)) {
+                        this->norms_valid = true;
+                    }
+
+                    if (!this->norms_valid) {
+                        update_norm = true;
+                        if constexpr (std::is_same<T, std::complex<double>>::value || std::is_same<T, std::complex<float>>::value) {
+                            if (alpha.imag() != 0.0) {
+                                update_norm = false;
+                            } else {
+                                alpha_real = alpha.real();
+                            }
+                        } else {
+                            alpha_real = alpha;
+                        }
+                    }
+                        
+                    if (update_norm) {
+                        #pragma omp parallel for
+                        for (size_t i = 0; i < this->block_norms.size(); ++i) {
+                            this->block_norms[i] = X.block_norms[i] * alpha_real;
+                        }
+                        this->norms_valid = true;
                     }
                 }
                 return;
             } else {
                  // Check if structures are identical
-                 bool same_structure = (this->row_ptr == X.row_ptr && this->col_ind == X.col_ind);
-                 if (same_structure) {
+                bool same_structure = (this->row_ptr == X.row_ptr && this->col_ind == X.col_ind);
+                if (same_structure) {
                     // If structure (topology) is same but graphs differ, block sizes might differ.
                     // if (this->val.size() != X.val.size()) {
                     //     throw std::runtime_error("Matrix dimension mismatch in axpby (same topology but different block sizes)");
@@ -812,23 +835,46 @@ public:
                             block[j] = alpha * block_x[j];
                         }
                     }
-                    this->norms_valid = X.norms_valid;
+                    this->block_norms = X.block_norms;
+                    this->norms_valid = false;
+                    bool update_norm = false;
+                    double alpha_real = 0;
 
-                    if (this->norms_valid) {
-                        #pragma omp parallel for
-                        for (size_t i = 0; i < this->block_norms.size(); ++i) {
-                            this->block_norms[i] = X.block_norms[i] * alpha;
+                    if (X.norms_valid) {
+                        if (alpha == T(1)) {
+                            this->norms_valid = true;
+                        }
+
+                        if (!this->norms_valid) {
+                            update_norm = true;
+                            if constexpr (std::is_same<T, std::complex<double>>::value || std::is_same<T, std::complex<float>>::value) {
+                                if (alpha.imag() != 0.0) {
+                                    update_norm = false;
+                                } else {
+                                    alpha_real = alpha.real();
+                                }
+                            } else {
+                                alpha_real = alpha;
+                            }
+                        }
+                        
+                        if (update_norm) {
+                            #pragma omp parallel for
+                            for (size_t i = 0; i < this->block_norms.size(); ++i) {
+                                this->block_norms[i] = X.block_norms[i] * alpha_real;
+                            }
+                            this->norms_valid = true;
                         }
                     }
                     return;
-                 } else {
+                } else {
                     // Reallocation Required
                     // optimizable, we can just copy the data using the available mem without reallocation,
                     // and allocate only needed space, and then do iterative copy.
                     *this = X.duplicate(); // Deep copy
                     this->scale(alpha);
                     return;
-                 }
+                }
             }
         }
         
@@ -1541,9 +1587,9 @@ public:
         c_graph->construct_distributed(graph->owned_global_indices, graph->block_sizes, adj);
 
         // [FIX START] Backfill block sizes for ghost columns in C
-        if (graph->rank == 0) {
-            std::cout << "Backfill block sizes for ghost columns in C" << std::endl;
-        }
+        // if (graph->rank == 0) {
+        //     std::cout << "Backfill block sizes for ghost columns in C" << std::endl;
+        // }
         {
             // ghost_sizes contains {global_col -> size} for remote blocks
             // B.graph contains sizes for local blocks

@@ -20,7 +20,7 @@ void test_basic_spmv() {
     std::vector<std::vector<int>> global_adj = {{0, 1}, {}};
     std::vector<int> block_sizes = {2, 2};
     
-    DistGraph graph(MPI_COMM_WORLD);
+    DistGraph graph(MPI_COMM_SELF);
     graph.construct_serial(2, block_sizes, global_adj);
     
     BlockSpMat<double> mat(&graph);
@@ -92,17 +92,16 @@ void test_axpby_structure_mismatch() {
     // Y should become X
     Y.axpby(1.0, X, 1.0);
     
-    assert(Y.col_ind.size() == 1);
-    assert(Y.col_ind[0] == 0);
-    
-    // Check values
-    // Y was empty (0), X was 1s. Result should be 1s.
-    // We need to access Y's data.
-    // Y.arena.get_ptr(Y.blk_handles[0])
-    // But arena is public? Yes in our implementation.
-    
-    double* ptr = Y.arena.get_ptr(Y.blk_handles[0]);
-    assert(ptr[0] == 1.0);
+    if (Y.graph->owned_global_indices.size() > 0) {
+        assert(Y.col_ind.size() == 1);
+        assert(Y.col_ind[0] == 0);
+        
+        // Check values
+        double* ptr = Y.arena.get_ptr(Y.blk_handles[0]);
+        assert(ptr[0] == 1.0);
+    } else {
+        assert(Y.col_ind.empty());
+    }
     
     std::cout << "PASSED" << std::endl;
 }
@@ -117,35 +116,24 @@ void test_memory_reuse() {
     
     BlockSpMat<double> mat(&graph);
     
-    uint64_t h1 = mat.blk_handles[0];
-    
     // Filter out
     mat.filter_blocks(100.0); // Remove everything
     
-    // Add back? 
-    // We can't easily "add back" without re-allocating from graph or using add_block which might fail if not in topology?
-    // Wait, add_block checks local graph. If we removed from topology, add_block might fail or re-add?
-    // Our add_block implementation checks `graph->global_to_local`. It does NOT check `col_ind`.
-    // It calls `update_local_block`.
-    // `update_local_block` iterates `col_ind`.
-    // If we removed from `col_ind`, `update_local_block` returns false.
-    // So `add_block` will fail to add to local.
-    
-    // So to test reuse, we need to manually allocate or use a method that expands topology.
-    // `axpby` with mismatch does expand topology!
-    
-    BlockSpMat<double> X(&graph); // Has (0,0)
+    BlockSpMat<double> X(&graph); // Has (0,0) if owned
+    if (graph.owned_global_indices.size() > 0) {
+        double d00[] = {1.0, 1.0, 1.0, 1.0};
+        X.add_block(0, 0, d00, 2, 2, AssemblyMode::INSERT, MatrixLayout::RowMajor);
+    }
     
     // Y (mat) is empty.
     // Y = X
     mat.axpby(1.0, X, 0.0);
     
-    // Should have reused the handle?
-    // Not necessarily same handle value, but should have allocated from freelist.
-    // We can't easily verify "reused" without inspecting Arena internals or handle values.
-    // But we can verify correctness.
-    
-    assert(mat.col_ind.size() == 1);
+    if (mat.graph->owned_global_indices.size() > 0) {
+        assert(mat.col_ind.size() == 1);
+    } else {
+        assert(mat.col_ind.empty());
+    }
     std::cout << "PASSED" << std::endl;
 }
 
@@ -196,35 +184,64 @@ void test_transpose() {
 
 void test_spmm() {
     std::cout << "Testing SpMM (Self)..." << std::endl;
+    int rank, size;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
     
-    // Create diagonal matrix
-    // [I  0]
-    // [0  I]
     std::vector<int> block_sizes = {2, 2};
-    std::vector<std::vector<int>> adj = {{0}, {1}};
+    std::vector<std::vector<int>> adj = {{0}, {1}}; // Global adjacency: 0->0, 1->1
+    
+    // Partition ownership
+    std::vector<int> owned;
+    if (size == 1) {
+        owned = {0, 1};
+    } else {
+        if (rank == 0) owned = {0};
+        else if (rank == 1) owned = {1};
+        // Ranks > 1 own nothing
+    }
+    
+    // Adjust local adjacency based on owned
+    std::vector<std::vector<int>> local_adj;
+    for (int global_row : owned) {
+        local_adj.push_back(adj[global_row]);
+    }
     
     DistGraph* graph = new DistGraph(MPI_COMM_WORLD);
-    graph->construct_distributed({0, 1}, block_sizes, adj);
+    graph->construct_distributed(owned, block_sizes, local_adj);
     
     BlockSpMat<double> mat(graph);
     mat.owns_graph = true;
     
-    std::vector<double> identity = {1, 0, 0, 1}; // ColMajor Identity
-    mat.add_block(0, 0, identity.data(), 2, 2);
-    mat.add_block(1, 1, identity.data(), 2, 2);
+    std::vector<double> identity = {1, 0, 0, 1}; 
+    
+    for (size_t i = 0; i < owned.size(); ++i) {
+        int global_row = owned[i];
+        // Add diagonal block (col = global_row)
+        mat.add_block(global_row, global_row, identity.data(), 2, 2);
+    }
     mat.assemble();
     
     // C = A * A = I * I = I
     BlockSpMat<double> C = mat.spmm_self(0.0);
     
-    // Verify C is Identity
-    assert(C.col_ind.size() == 2);
+    // Verify C
+    // Should have same structure as A (which is I)
+    // So local size should match owned size
     
-    // Check block (0,0)
-    uint64_t h0 = C.blk_handles[0];
-    double* d0 = C.arena.get_ptr(h0);
-    assert(d0[0] == 1.0 && d0[3] == 1.0); // Diagonal
-    assert(d0[1] == 0.0 && d0[2] == 0.0); // Off-diagonal
+    if (C.col_ind.size() != owned.size()) {
+        std::cout << "Rank " << rank << " C size: " << C.col_ind.size() 
+                  << " Expected: " << owned.size() << std::endl;
+    }
+    assert(C.col_ind.size() == owned.size());
+    
+    for(size_t k=0; k<C.col_ind.size(); ++k) {
+        // Check diagonal values
+        uint64_t h = C.blk_handles[k];
+        double* d = C.arena.get_ptr(h);
+        assert(d[0] == 1.0 && d[3] == 1.0); // Diagonal
+        assert(d[1] == 0.0 && d[2] == 0.0); // Off-diagonal
+    }
     
     std::cout << "PASSED" << std::endl;
 }

@@ -15,7 +15,7 @@ class BlockArena {
 public:
     // Default page size: 1M elements (approx 8MB for double)
     // This is small enough for tests but large enough to amortize allocation.
-    static constexpr size_t DEFAULT_PAGE_SIZE = 1ULL << 31; 
+    static constexpr size_t DEFAULT_PAGE_SIZE = 1ULL << 22; 
 
     BlockArena() : current_page_idx(0), current_offset(0) {
         // Initialize with one empty page? 
