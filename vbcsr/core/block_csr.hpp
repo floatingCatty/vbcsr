@@ -92,7 +92,8 @@ public:
         std::vector<T> data;
     };
     // Map: Owner -> (GlobalRow, GlobalCol) -> PendingBlock
-    std::map<int, std::map<std::pair<int, int>, PendingBlock>> remote_blocks;
+    // Thread-local storage for remote blocks to avoid locking
+    std::vector<std::map<int, std::map<std::pair<int, int>, PendingBlock>>> thread_remote_blocks;
 
     // Helper for squared norm
     static double get_sq_norm(const T& v) {
@@ -132,6 +133,12 @@ public:
 
 public:
     BlockSpMat(DistGraph* g) : graph(g) {
+        int max_threads = 1;
+        #ifdef _OPENMP
+        max_threads = omp_get_max_threads();
+        #endif
+        thread_remote_blocks.resize(max_threads);
+        
         allocate_from_graph();
     }
 
@@ -149,7 +156,7 @@ public:
         blk_handles(std::move(other.blk_handles)),
         blk_sizes(std::move(other.blk_sizes)),
         arena(std::move(other.arena)),
-        remote_blocks(std::move(other.remote_blocks)),
+        thread_remote_blocks(std::move(other.thread_remote_blocks)),
         owns_graph(other.owns_graph),
 
         block_norms(std::move(other.block_norms)),
@@ -169,7 +176,7 @@ public:
             blk_handles = std::move(other.blk_handles);
             blk_sizes = std::move(other.blk_sizes);
             arena = std::move(other.arena);
-            remote_blocks = std::move(other.remote_blocks);
+            thread_remote_blocks = std::move(other.thread_remote_blocks);
             owns_graph = other.owns_graph;
             
             // Fix: Move norms state
@@ -292,7 +299,23 @@ public:
              return;
         }
 
-        auto& blocks_map = remote_blocks[owner];
+        int tid = 0;
+        #ifdef _OPENMP
+        tid = omp_get_thread_num();
+        #endif
+        
+        if (tid >= thread_remote_blocks.size()) {
+            // This should rarely happen if max_threads is set correctly at construction
+            // But if it does, we can't safely resize. 
+            #pragma omp critical
+            {
+                if (tid >= thread_remote_blocks.size()) {
+                    thread_remote_blocks.resize(tid + 1);
+                }
+            }
+        }
+
+        auto& blocks_map = thread_remote_blocks[tid][owner];
         std::pair<int, int> key = {global_row, global_col};
         auto it = blocks_map.find(key);
         
@@ -362,7 +385,8 @@ public:
 
     // Finalize assembly by exchanging remote blocks
     void assemble() {
-        if (graph->size == 1 && remote_blocks.empty()) {
+        if (graph->size == 1) {
+            
             norms_valid = false;
             return;
         }
@@ -370,13 +394,16 @@ public:
         
         // 1. Counting pass
         std::vector<size_t> send_counts(size, 0);
-        for (const auto& kv : remote_blocks) {
-            int target = kv.first;
-            size_t bytes = 0;
-            for (const auto& inner_kv : kv.second) {
-                bytes += 5 * sizeof(int) + inner_kv.second.data.size() * sizeof(T);
+        
+        for (const auto& remote_blocks : thread_remote_blocks) {
+            for (const auto& kv : remote_blocks) {
+                int target = kv.first;
+                size_t bytes = 0;
+                for (const auto& inner_kv : kv.second) {
+                    bytes += 5 * sizeof(int) + inner_kv.second.data.size() * sizeof(T);
+                }
+                send_counts[target] += bytes;
             }
-            send_counts[target] = bytes;
         }
         
         // 2. Exchange counts and setup displacements
@@ -395,20 +422,25 @@ public:
         
         // 3. Pack flat buffer
         std::vector<char> send_blob(sdispls[size]);
-        for (auto& kv : remote_blocks) {
-            int target = kv.first;
-            char* ptr = send_blob.data() + sdispls[target];
-            for (auto& inner_kv : kv.second) {
-                auto& blk = inner_kv.second;
-                size_t data_bytes = blk.data.size() * sizeof(T);
-                
-                std::memcpy(ptr, &blk.g_row, sizeof(int)); ptr += sizeof(int);
-                std::memcpy(ptr, &blk.g_col, sizeof(int)); ptr += sizeof(int);
-                std::memcpy(ptr, &blk.rows, sizeof(int)); ptr += sizeof(int);
-                std::memcpy(ptr, &blk.cols, sizeof(int)); ptr += sizeof(int);
-                int mode_int = static_cast<int>(blk.mode);
-                std::memcpy(ptr, &mode_int, sizeof(int)); ptr += sizeof(int);
-                std::memcpy(ptr, blk.data.data(), data_bytes); ptr += data_bytes;
+        std::vector<size_t> current_offsets = sdispls; // Track current write position per rank
+
+        for (auto& remote_blocks : thread_remote_blocks) {
+            for (auto& kv : remote_blocks) {
+                int target = kv.first;
+                char* ptr = send_blob.data() + current_offsets[target];
+                for (auto& inner_kv : kv.second) {
+                    auto& blk = inner_kv.second;
+                    size_t data_bytes = blk.data.size() * sizeof(T);
+                    
+                    std::memcpy(ptr, &blk.g_row, sizeof(int)); ptr += sizeof(int);
+                    std::memcpy(ptr, &blk.g_col, sizeof(int)); ptr += sizeof(int);
+                    std::memcpy(ptr, &blk.rows, sizeof(int)); ptr += sizeof(int);
+                    std::memcpy(ptr, &blk.cols, sizeof(int)); ptr += sizeof(int);
+                    int mode_int = static_cast<int>(blk.mode);
+                    std::memcpy(ptr, &mode_int, sizeof(int)); ptr += sizeof(int);
+                    std::memcpy(ptr, blk.data.data(), data_bytes); ptr += data_bytes;
+                }
+                current_offsets[target] = ptr - send_blob.data();
             }
         }
         
@@ -458,7 +490,7 @@ public:
             }
         }
         
-        remote_blocks.clear();
+        for(auto& map : thread_remote_blocks) map.clear();
         norms_valid = false;
     }
 
