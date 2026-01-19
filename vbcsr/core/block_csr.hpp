@@ -1060,52 +1060,19 @@ public:
         // Path C: General Case (Union)
         // We need to merge using GLOBAL indices to ensure correctness.
         
-        // 1. Collect all global columns for each row
-        std::vector<int> new_row_ptr(n_rows + 1);
-        new_row_ptr[0] = 0;
+        // 1. Construct new graph structure (Adjacency)
+        // NOTE: We use a "collect, sort, unique" approach instead of a linear merge.
+        // This is because DistGraph sorts ghost indices by OWNER rank first, then by Global ID.
+        // Therefore, local indices do NOT correspond to sorted global indices for ghosts.
+        // A linear merge assuming sorted global indices would be incorrect.
         
-        std::vector<int> row_nnz(n_rows);
-        
-        #pragma omp parallel for
-        for (int i = 0; i < n_rows; ++i) {
-            int y_start = this->row_ptr[i];
-            int y_end = this->row_ptr[i+1];
-            int x_start = X.row_ptr[i];
-            int x_end = X.row_ptr[i+1];
-            
-            int count = 0;
-            int y_k = y_start;
-            int x_k = x_start;
-            
-            // We need to compare GLOBAL indices
-            while (y_k < y_end && x_k < x_end) {
-                int y_col_local = this->col_ind[y_k];
-                int x_col_local = X.col_ind[x_k];
-                int y_col_global = this->graph->get_global_index(y_col_local);
-                int x_col_global = X.graph->get_global_index(x_col_local);
-                
-                if (y_col_global < x_col_global) {
-                    count++; y_k++;
-                } else if (x_col_global < y_col_global) {
-                    count++; x_k++;
-                } else {
-                    count++; y_k++; x_k++;
-                }
-            }
-            count += (y_end - y_k) + (x_end - x_k);
-            row_nnz[i] = count;
-        }
-        
-        for (int i = 0; i < n_rows; ++i) {
-            new_row_ptr[i+1] = new_row_ptr[i] + row_nnz[i];
-        }
-        
-        // 2. Construct new graph structure (Adjacency)
         std::vector<std::vector<int>> new_adj(n_rows);
         
         #pragma omp parallel for
         for (int i = 0; i < n_rows; ++i) {
-            std::vector<int> cols;
+            // Optimization: Write directly to new_adj[i] to avoid temporary vector allocation/move
+            std::vector<int>& cols = new_adj[i];
+            
             // Reserve conservative estimate (sum of sizes)
             int y_count = this->row_ptr[i+1] - this->row_ptr[i];
             int x_count = X.row_ptr[i+1] - X.row_ptr[i];
@@ -1123,8 +1090,6 @@ public:
             // Sort and Unique
             std::sort(cols.begin(), cols.end());
             cols.erase(std::unique(cols.begin(), cols.end()), cols.end());
-            
-            new_adj[i] = std::move(cols);
         }
         
         // 3. Create New Graph
@@ -1163,6 +1128,7 @@ public:
         }
         
         // 4. Populate Values
+        std::vector<int> new_row_ptr;
         std::vector<int> new_col_ind;
         new_graph->get_matrix_structure(new_row_ptr, new_col_ind);
         

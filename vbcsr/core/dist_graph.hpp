@@ -36,6 +36,13 @@ public:
     std::vector<int> adj_ptr;
     std::vector<int> adj_ind;
 
+    // IMPORTANT: Ghost Index Convention
+    // Ghost blocks (indices >= n_owned) are sorted by OWNER RANK first, then by Global ID.
+    // This enables zero-copy communication in DistVector::sync_ghosts (data arrives in rank order).
+    // However, this means that local indices do NOT necessarily correspond to sorted global indices.
+    // Algorithms that rely on sorted global indices (like linear merge) must handle this explicitly.
+
+
     // Communication pattern
     std::vector<int> send_counts;
     std::vector<int> recv_counts;
