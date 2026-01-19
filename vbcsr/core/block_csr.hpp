@@ -1681,6 +1681,7 @@ public:
             
             // Construct adjacency for C
             std::vector<std::vector<int>> c_adj(n_cols);
+            std::vector<std::vector<uint64_t>> c_handles(n_cols);
             for (int i = 0; i < n_rows; ++i) {
                 int start = row_ptr[i];
                 int end = row_ptr[i+1];
@@ -1688,6 +1689,7 @@ public:
                 for (int k = start; k < end; ++k) {
                     int col = col_ind[k];
                     c_adj[col].push_back(g_row);
+                    c_handles[col].push_back(blk_handles[k]);
                 }
             }
             
@@ -1706,33 +1708,28 @@ public:
             BlockSpMat C(graph_C);
             C.owns_graph = true;
             
-            // We need to fill in column-major order of A (which is row-major of C)
-            // But we iterate A in row-major. So we need offsets.
-            std::vector<int> current_pos = C.row_ptr; // Copy starting positions
-            
-            // Fill Data
-            // We iterate A and scatter to C
+            // Fill Data (Parallel Gather)
             #pragma omp parallel for
-            for (int i = 0; i < n_rows; ++i) {
-                int r_dim = graph->block_sizes[i];
-                int start = row_ptr[i];
-                int end = row_ptr[i+1];
-                for (int k = start; k < end; ++k) {
-                    int col = col_ind[k];
-                    int c_dim = graph->block_sizes[col];
+            for (int i = 0; i < n_cols; ++i) {
+                int A_cols = c_block_sizes[i]; // C's row dim is A's col dim
+                int start = C.row_ptr[i];
+                int end = C.row_ptr[i+1];
+                
+                for (int k = 0; k < (end - start); ++k) {
+                    uint64_t src_handle = c_handles[i][k];
+                    uint64_t dest_handle = C.blk_handles[start + k];
                     
-                    int dest_idx;
-                    #pragma omp atomic capture
-                    dest_idx = current_pos[col]++;
+                    const T* a_data = arena.get_ptr(src_handle);
+                    T* c_data = C.arena.get_ptr(dest_handle);
                     
-                    // Copy and Transpose Data
-                    const T* a_data = arena.get_ptr(blk_handles[k]);
-                    T* c_data = C.arena.get_ptr(C.blk_handles[dest_idx]);
+                    int col_C_local = C.col_ind[start + k];
+                    int A_rows = C.graph->block_sizes[col_C_local];
                     
-                    for(int c=0; c<c_dim; ++c) {
-                        for(int r=0; r<r_dim; ++r) {
-                            T val = a_data[c * r_dim + r];
-                            c_data[r * c_dim + c] = ConjHelper<T>::apply(val);
+                    // Transpose: A (A_rows x A_cols) -> C (A_cols x A_rows)
+                    for(int c=0; c<A_cols; ++c) {
+                        for(int r=0; r<A_rows; ++r) {
+                            T val = a_data[c * A_rows + r];
+                            c_data[r * A_cols + c] = ConjHelper<T>::apply(val);
                         }
                     }
                 }

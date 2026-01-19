@@ -283,6 +283,11 @@ public:
     void construct_distributed(const std::vector<int>& my_owned_indices, 
                              const std::vector<int>& my_block_sizes, 
                              const std::vector<std::vector<int>>& my_adj) {
+        // Enforce sorted indices for Canonical Linear Scan correctness
+        if (!std::is_sorted(my_owned_indices.begin(), my_owned_indices.end())) {
+            throw std::runtime_error("DistGraph::construct_distributed requires sorted owned_global_indices");
+        }
+
         owned_global_indices = my_owned_indices;
         int n_owned = owned_global_indices.size();
         
