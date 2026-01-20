@@ -10,13 +10,17 @@ find_package(MPI REQUIRED COMPONENTS C)
 find_package(OpenMP REQUIRED)
 find_package(Threads REQUIRED)
 
+# Add cmake module path
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
+
 # Try to find MKL first, then BLAS
+set(ENABLE_MPI ON)
 find_package(MKL)
 if(MKL_FOUND)
     message(STATUS "MKL found: ${MKL_INCLUDE_DIRS}")
     include_directories(${MKL_INCLUDE_DIRS})
     link_directories(${MKL_LIBRARY_DIRS})
-    set(BLAS_LIBRARIES ${MKL_LIBRARIES})
+    set(BLAS_LIBRARIES MKL::MKL)
     add_definitions(-DVBCSR_USE_MKL)
 else()
     find_package(BLAS)

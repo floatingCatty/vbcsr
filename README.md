@@ -7,12 +7,22 @@ VBCSR is a high-performance distributed sparse matrix library designed for effic
 **Why VBCSR?**
 - **Hardware-Accelerated Performance**: Leveraging SIMD (AVX/AVX2) instructions, precaching and threading, VBCSR delivers state-of-the-art performance for block-sparse matrix operations.
 - **Easy Integration**: Header-only C++ core for easy inclusion in both Python and C++ projects.
-- **Pythonic & Intuitive**: Perform complex linear algebra using natural Python syntax (`A * x`, `A + B`) and standard NumPy arrays.
+- **Pythonic & Intuitive**: Perform complex linear algebra using natural Python syntax (`A * x`, `A + B`, `A @ B`) and standard NumPy arrays.
 - **Scalable & Distributed**: Built on MPI to handle massive datasets across distributed computing clusters.
 - **Seamless Integration**: Drop-in compatibility with SciPy solvers (`scipy.sparse.linalg`) for easy integration into existing workflows. 
 
 ## Installation
 
+First, please ensure your environment have compilers for c and fortran, also BLAS (OpenBLAS, MKL) and OpenMP are installed. The code also need mpi. You can install them using: 
+```bash
+conda install -c conda-forge openblas/mkl mkl-include openmp openmpi compilers
+```
+or
+```bash
+sudo apt-get install build-essential gfortran libopenblas-dev libmkl-dev libopenmp-dev libopenmpi-dev
+```
+
+Then, you can install the package using:
 ```bash
 pip install .
 ```

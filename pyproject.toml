@@ -13,6 +13,8 @@ authors = [
   {name = "zhanghao", email = "yinzhanghao.zhou@mail.mcgill.ca"},
 ]
 dependencies = [
+    "cmake",
+    "pybind11",
     "numpy",
     "scipy",
     "mpi4py",
