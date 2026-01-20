@@ -37,7 +37,7 @@ passed_tests = []
 print(f"Running {len(tests)} tests...")
 
 for test_file in tests:
-    exe_name = test_file.replace(".cpp", "")
+    exe_name = "exec_"+test_file.replace(".cpp", "")
     print(f"--------------------------------------------------")
     print(f"Testing {exe_name}...")
     
