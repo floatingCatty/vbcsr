@@ -482,3 +482,246 @@ class VBCSR(LinearOperator):
             data (np.ndarray): 2D array of shape (owned_rows, all_local_cols).
         """
         self._core.from_dense(data)
+
+    @classmethod
+    def from_scipy(cls, spmat: Any, comm=None) -> 'VBCSR':
+        """
+        Create a VBCSR matrix from a SciPy sparse matrix.
+        
+        Args:
+            spmat: SciPy sparse matrix (bsr_matrix, csr_matrix, etc.).
+                   Assumed to be on Rank 0 (or all ranks).
+                   
+        Returns:
+            VBCSR: The initialized matrix.
+        """
+        import scipy.sparse as sp
+        
+        rank = comm.Get_rank() if comm else 0
+        
+        # Ensure spmat is available (at least on rank 0)
+        # If passed as None on other ranks, we handle it.
+        
+        # Convert to BSR or CSR
+        # If it's BSR, we use its block structure.
+        # If not, we convert to CSR and treat as 1x1 blocks.
+        
+        global_blocks = 0
+        block_sizes = []
+        adj = []
+        
+        # Data for filling
+        # We need to broadcast structure if only rank 0 has it.
+        # For simplicity, we assume spmat is provided on Rank 0 and we use create_serial logic
+        # which expects arguments on all ranks (or at least rank 0 to distribute).
+        # But create_serial implementation in python currently expects arguments on all ranks?
+        # Let's check create_serial:
+        # "Create a VBCSR matrix using serial graph construction (Rank 0 distributes)."
+        # It calls graph.construct_serial.
+        # graph.construct_serial implementation in C++:
+        # "If rank 0 has data, scatter." -> It expects data on Rank 0.
+        
+        if rank == 0:
+            if sp.isspmatrix_bsr(spmat):
+                # BSR Matrix
+                R, C = spmat.blocksize
+                if R != C:
+                    raise ValueError("VBCSR requires square blocks (R == C) for BSR input.")
+                
+                n_blocks = spmat.shape[0] // R
+                block_sizes = [R] * n_blocks
+                
+                # Adjacency
+                # spmat.indptr, spmat.indices
+                adj = []
+                for i in range(n_blocks):
+                    start = spmat.indptr[i]
+                    end = spmat.indptr[i+1]
+                    adj.append(spmat.indices[start:end].tolist())
+                    
+            else:
+                # Treat as CSR (1x1 blocks)
+                spmat_csr = spmat.tocsr()
+                n_blocks = spmat_csr.shape[0]
+                block_sizes = [1] * n_blocks
+                
+                adj = []
+                for i in range(n_blocks):
+                    start = spmat_csr.indptr[i]
+                    end = spmat_csr.indptr[i+1]
+                    adj.append(spmat_csr.indices[start:end].tolist())
+        
+        # Create Matrix (Distributes structure)
+        mat = cls.create_serial(comm, n_blocks, block_sizes, adj, spmat.dtype)
+        
+        # Fill Data
+        # We iterate over blocks on Rank 0 and add them.
+        # Since create_serial distributes ownership, Rank 0 might not own everything.
+        # But add_block handles remote owners (if implemented with MPI).
+        # However, sending every block individually is slow.
+        # Ideally we should scatter data.
+        # But for "adapter", correctness first.
+        
+        if rank == 0:
+            if sp.isspmatrix_bsr(spmat):
+                R, C = spmat.blocksize
+                for i in range(n_blocks):
+                    start = spmat.indptr[i]
+                    end = spmat.indptr[i+1]
+                    for k in range(start, end):
+                        j = spmat.indices[k]
+                        data_blk = spmat.data[k] # Shape (R, C)
+                        mat.add_block(i, j, data_blk)
+            else:
+                spmat_csr = spmat.tocsr()
+                for i in range(n_blocks):
+                    start = spmat_csr.indptr[i]
+                    end = spmat_csr.indptr[i+1]
+                    for k in range(start, end):
+                        j = spmat_csr.indices[k]
+                        val = spmat_csr.data[k]
+                        # 1x1 block
+                        mat.add_block(i, j, np.array([[val]], dtype=spmat.dtype))
+                        
+        mat.assemble()
+        return mat
+
+    def to_scipy(self, format: Optional[str] = None) -> Any:
+        """
+        Convert the LOCAL portion of the VBCSR matrix to a SciPy sparse matrix.
+        
+        Args:
+            format: 'bsr', 'csr', or None (default).
+                    If None, automatically chooses 'bsr' if blocks are uniform, else 'csr'.
+                    
+        Returns:
+            scipy.sparse.spmatrix: The local matrix.
+        """
+        import scipy.sparse as sp
+        # 1. Get Packed Values
+        # Layout: RowMajor for easy numpy/scipy compatibility
+        values = self._core.get_values() # 1D array
+        
+        # 2. Get Structure
+        row_ptr = self._core.row_ptr
+        col_ind = self._core.col_ind
+        
+        # 3. Check Uniformity
+        # We need block sizes.
+        block_sizes = self.graph.block_sizes
+        
+        # Check uniformity
+        is_uniform = False
+        uniform_size = 0
+        if len(block_sizes) > 0:
+            first_size = block_sizes[0]
+            if all(s == first_size for s in block_sizes):
+                is_uniform = True
+                uniform_size = first_size
+        
+        target_format = format
+        if target_format is None:
+            target_format = 'bsr' if is_uniform else 'csr'
+            
+        if target_format == 'bsr':
+            if not is_uniform:
+                raise ValueError("Cannot convert non-uniform VBCSR to BSR format.")
+            
+            R = uniform_size
+            C = uniform_size
+            
+            # Reshape values to (nnz_blocks, R, C)
+            # values is flat.
+            # Total size = nnz_blocks * R * C
+            nnz_blocks = len(col_ind)
+            if len(values) != nnz_blocks * R * C:
+                raise RuntimeError(f"Data size mismatch: expected {nnz_blocks*R*C}, got {len(values)}")
+            
+            data = values.reshape((nnz_blocks, R, C))
+            
+            n_block_rows = len(row_ptr) - 1
+            local_rows = n_block_rows * R
+            
+            total_local_cols = sum(block_sizes)
+            local_shape = (local_rows, total_local_cols)
+            
+            return sp.bsr_matrix((data, col_ind, row_ptr), shape=local_shape)
+            
+        elif target_format == 'csr':
+            # Expand to Scalar CSR
+            
+            # 1. Calculate scalar row pointers
+            n_block_rows = len(row_ptr) - 1
+            
+            # Pre-calculate offsets for scalar rows
+            scalar_row_offsets = np.zeros(n_block_rows + 1, dtype=np.int32)
+            # block_sizes is list-like, convert to numpy for efficiency if needed, but it's fine.
+            # We need block sizes for owned rows.
+            # block_sizes contains ALL local blocks.
+            # We assume row i corresponds to block i?
+            # Yes, VBCSR graph assumes nodes 0..N.
+            
+            for i in range(n_block_rows):
+                scalar_row_offsets[i+1] = scalar_row_offsets[i] + block_sizes[i]
+                
+            total_scalar_rows = scalar_row_offsets[-1]
+            
+            # 2. Pre-calculate scalar column offsets
+            scalar_col_offsets = np.zeros(len(block_sizes) + 1, dtype=np.int32)
+            np.cumsum(block_sizes, out=scalar_col_offsets[1:])
+            
+            # 3. Prepare CSR arrays
+            total_nnz = len(values)
+            scalar_indptr = np.zeros(total_scalar_rows + 1, dtype=np.int32)
+            scalar_indices = np.zeros(total_nnz, dtype=np.int32)
+            scalar_data_out = np.zeros(total_nnz, dtype=self.dtype)
+            
+            current_nnz = 0
+            blk_value_offset = 0
+            
+            for i in range(n_block_rows):
+                R_i = block_sizes[i]
+                start_blk = row_ptr[i]
+                end_blk = row_ptr[i+1]
+                
+                # Cache block info for this row
+                row_blocks = []
+                for k in range(start_blk, end_blk):
+                    j = col_ind[k]
+                    C_j = block_sizes[j]
+                    row_blocks.append((j, C_j, blk_value_offset))
+                    blk_value_offset += R_i * C_j
+                
+                for r in range(R_i):
+                    scalar_row_idx = scalar_row_offsets[i] + r
+                    scalar_indptr[scalar_row_idx] = current_nnz
+                    
+                    for (j, C_j, blk_start) in row_blocks:
+                        # Data copy
+                        src_start = blk_start + r * C_j
+                        src_end = src_start + C_j
+                        dst_end = current_nnz + C_j
+                        
+                        scalar_data_out[current_nnz:dst_end] = values[src_start:src_end]
+                        
+                        # Indices
+                        col_start = scalar_col_offsets[j]
+                        # Manual loop for indices
+                        for c in range(C_j):
+                            scalar_indices[current_nnz + c] = col_start + c
+                            
+                        current_nnz += C_j
+                        
+            scalar_indptr[-1] = current_nnz
+            
+            # Shape
+            local_rows = len(scalar_indptr) - 1
+            total_local_cols = sum(block_sizes)
+            local_shape = (local_rows, total_local_cols)
+            
+            return sp.csr_matrix((scalar_data_out, scalar_indices, scalar_indptr), shape=local_shape)
+            
+        else:
+            raise ValueError(f"Unknown format: {target_format}")
+
+

@@ -133,6 +133,28 @@ void bind_block_spmat(py::module& m, const std::string& name) {
         .def("transpose", &BlockSpMat<T>::transpose)
         .def("extract_submatrix", &BlockSpMat<T>::extract_submatrix, py::arg("global_indices"))
         .def("insert_submatrix", &BlockSpMat<T>::insert_submatrix, py::arg("submat"), py::arg("global_indices"))
+        .def("insert_submatrix", &BlockSpMat<T>::insert_submatrix, py::arg("submat"), py::arg("global_indices"))
+        .def("get_block", [](const BlockSpMat<T>& self, int row, int col) {
+            std::vector<T> vec = self.get_block(row, col);
+            if (vec.empty()) return py::array_t<T>(); // Return empty array or None? Empty array is safer.
+            
+            int r_dim = self.graph->block_sizes[row];
+            int c_dim = self.graph->block_sizes[col];
+            
+            return py::array_t<T>(
+                {r_dim, c_dim},
+                {c_dim * sizeof(T), sizeof(T)}, // RowMajor
+                vec.data()
+            );
+        }, py::arg("row"), py::arg("col"))
+        .def("get_values", [](const BlockSpMat<T>& self) {
+            std::vector<T> vec = self.get_values();
+            return py::array_t<T>(
+                { (py::ssize_t)vec.size() },
+                { sizeof(T) },
+                vec.data()
+            );
+        })
         .def("to_dense", [](const BlockSpMat<T>& self) {
             // Return 2D numpy array
             std::vector<T> vec = self.to_dense();
@@ -181,7 +203,14 @@ void bind_block_spmat(py::module& m, const std::string& name) {
             }
             
             self.from_dense(vec);
-        }, py::arg("array"));
+        }, py::arg("array"))
+        .def_property_readonly("row_ptr", [](const BlockSpMat<T>& self) {
+            return py::array_t<int>(self.row_ptr.size(), self.row_ptr.data());
+        })
+        .def_property_readonly("col_ind", [](const BlockSpMat<T>& self) {
+            return py::array_t<int>(self.col_ind.size(), self.col_ind.data());
+        })
+        ;
 }
 
 PYBIND11_MODULE(vbcsr_core, m) {

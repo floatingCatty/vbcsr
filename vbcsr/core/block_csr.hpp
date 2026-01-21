@@ -805,6 +805,81 @@ public:
         norms_valid = false;
     }
 
+    // Get a specific block (copy)
+    std::vector<T> get_block(int local_row, int local_col, MatrixLayout layout = MatrixLayout::RowMajor) const {
+        int start = row_ptr[local_row];
+        int end = row_ptr[local_row+1];
+        
+        for (int k = start; k < end; ++k) {
+            if (col_ind[k] == local_col) {
+                int r_dim = graph->block_sizes[local_row];
+                int c_dim = graph->block_sizes[local_col];
+                size_t sz = blk_sizes[k];
+                
+                std::vector<T> result(sz);
+                const T* block_ptr = arena.get_ptr(blk_handles[k]);
+                
+                if (layout == MatrixLayout::ColMajor) {
+                    std::memcpy(result.data(), block_ptr, sz * sizeof(T));
+                } else {
+                    // Transpose ColMajor -> RowMajor
+                    for (int r = 0; r < r_dim; ++r) {
+                        for (int c = 0; c < c_dim; ++c) {
+                            result[r * c_dim + c] = block_ptr[c * r_dim + r];
+                        }
+                    }
+                }
+                return result;
+            }
+        }
+        return std::vector<T>(); // Empty if not found (or throw?)
+    }
+
+    // Export packed data for Python/Scipy
+    // Returns a single vector containing all blocks concatenated.
+    // Blocks are ordered by (row, col) as in col_ind.
+    // If layout is RowMajor, blocks are transposed (if internal is ColMajor).
+    std::vector<T> get_values(MatrixLayout layout = MatrixLayout::RowMajor) const {
+        // Calculate total size
+        size_t total_size = 0;
+        for (size_t s : blk_sizes) total_size += s;
+        
+        std::vector<T> result(total_size);
+        size_t offset = 0;
+        
+        int n_rows = row_ptr.size() - 1;
+        for (int i = 0; i < n_rows; ++i) {
+            int r_dim = graph->block_sizes[i];
+            int start = row_ptr[i];
+            int end = row_ptr[i+1];
+            
+            for (int k = start; k < end; ++k) {
+                int col = col_ind[k];
+                int c_dim = graph->block_sizes[col];
+                const T* block_ptr = arena.get_ptr(blk_handles[k]);
+                size_t sz = blk_sizes[k]; // should be r_dim * c_dim
+                
+                T* dest = result.data() + offset;
+                
+                // Internal storage is ColMajor
+                if (layout == MatrixLayout::ColMajor) {
+                    std::memcpy(dest, block_ptr, sz * sizeof(T));
+                } else {
+                    // Transpose ColMajor -> RowMajor
+                    // Internal: A[j*r_dim + i]
+                    // Output:   A[i*c_dim + j]
+                    for (int r = 0; r < r_dim; ++r) {
+                        for (int c = 0; c < c_dim; ++c) {
+                            dest[r * c_dim + c] = block_ptr[c * r_dim + r];
+                        }
+                    }
+                }
+                offset += sz;
+            }
+        }
+        return result;
+    }
+
     void axpby(T alpha, const BlockSpMat<T, Kernel>& X, T beta) {
         // Optimization Checks
         if (alpha == T(0)) {
