@@ -13,28 +13,48 @@ find_package(Threads REQUIRED)
 # Add cmake module path
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
-# Try to find MKL first, then BLAS
-set(ENABLE_MPI ON)
-find_package(MKL)
-if(MKL_FOUND)
-    message(STATUS "MKL found: ${MKL_INCLUDE_DIRS}")
-    include_directories(${MKL_INCLUDE_DIRS})
-    link_directories(${MKL_LIBRARY_DIRS})
-    set(BLAS_LIBRARIES MKL::MKL)
-    add_definitions(-DVBCSR_USE_MKL)
-else()
-    find_package(BLAS)
-    if(BLAS_FOUND)
-        message(STATUS "BLAS found: ${BLAS_LIBRARIES}")
-        # Check if it's OpenBLAS
-        if(BLAS_LIBRARIES MATCHES "openblas")
-            add_definitions(-DVBCSR_USE_OPENBLAS)
-        else()
-            add_definitions(-DVBCSR_USE_BLAS)
+# BLAS Integer Size Handling
+option(VBCSR_BLAS_ILP64 "Use 64-bit integers for BLAS/LAPACK interfaces" OFF)
+
+# Find BLAS and LAPACK
+# We prefer MKL if available, but via standard FindBLAS
+if(NOT BLAS_LIBRARIES)
+    find_package(BLAS REQUIRED)
+endif()
+
+if(BLAS_FOUND)
+    message(STATUS "BLAS found: ${BLAS_LIBRARIES}")
+    
+    # Auto-detect ILP64 if not explicitly set
+    if(NOT DEFINED CACHE{VBCSR_BLAS_ILP64})
+        string(TOLOWER "${BLAS_LIBRARIES}" BLAS_LIBRARIES_LOWER)
+        if(BLAS_LIBRARIES_LOWER MATCHES "ilp64")
+            set(VBCSR_BLAS_ILP64 ON CACHE BOOL "Use 64-bit integers for BLAS/LAPACK interfaces" FORCE)
+            message(STATUS "Auto-detected ILP64 BLAS, enabling VBCSR_BLAS_ILP64")
         endif()
-    else()
-        message(WARNING "No BLAS library found. Performance may be degraded.")
     endif()
+
+    # Check for MKL
+    string(TOLOWER "${BLAS_LIBRARIES}" BLAS_LIBRARIES_LOWER)
+    if(BLAS_LIBRARIES_LOWER MATCHES "mkl" OR BLAS_LIBRARIES_LOWER MATCHES "intel")
+        add_definitions(-DVBCSR_USE_MKL)
+        message(STATUS "MKL detected in BLAS libraries.")
+    elseif(BLAS_LIBRARIES_LOWER MATCHES "openblas")
+        add_definitions(-DVBCSR_USE_OPENBLAS)
+        message(STATUS "OpenBLAS detected.")
+    else()
+        add_definitions(-DVBCSR_USE_BLAS)
+        message(STATUS "Generic BLAS detected.")
+    endif()
+else()
+    message(FATAL_ERROR "BLAS library not found.")
+endif()
+
+if(VBCSR_BLAS_ILP64)
+    add_definitions(-DVBCSR_BLAS_ILP64)
+    message(STATUS "Using 64-bit integers for BLAS interfaces.")
+else()
+    message(STATUS "Using 32-bit integers for BLAS interfaces.")
 endif()
 
 # Pybind11

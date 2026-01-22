@@ -8,51 +8,60 @@
 #include <omp.h>
 #endif
 
-#ifdef VBCSR_USE_MKL
-#include <mkl.h>
-#elif defined(VBCSR_USE_OPENBLAS) || defined(VBCSR_USE_BLAS)
+#ifdef VBCSR_BLAS_ILP64
+#include <cstdint>
+using vbcsr_blas_int = int64_t;
+#else
+using vbcsr_blas_int = int;
+#endif
+
+#if defined(VBCSR_USE_OPENBLAS) || defined(VBCSR_USE_BLAS)
 #include <cblas.h>
 #ifdef VBCSR_USE_OPENBLAS
 extern "C" void openblas_set_num_threads(int num_threads);
 #endif
 #endif
 
+#ifdef VBCSR_USE_MKL
+extern "C" void mkl_set_num_threads(int num_threads);
+#endif
+
 // Forward declare CBLAS functions if needed or include header
 // For now, we assume a standard CBLAS interface is available via linking
 // or we provide a naive fallback.
 
-#if !defined(VBCSR_USE_MKL) && !defined(VBCSR_USE_OPENBLAS) && !defined(VBCSR_USE_BLAS)
+#if !defined(VBCSR_USE_OPENBLAS) && !defined(VBCSR_USE_BLAS)
 extern "C" {
     // Basic BLAS signatures
-    void cblas_dgemv(const int Order, const int TransA, const int M, const int N,
-                     const double alpha, const double *A, const int lda,
-                     const double *X, const int incX, const double beta,
-                     double *Y, const int incY);
+    void cblas_dgemv(const int Order, const int TransA, const vbcsr_blas_int M, const vbcsr_blas_int N,
+                     const double alpha, const double *A, const vbcsr_blas_int lda,
+                     const double *X, const vbcsr_blas_int incX, const double beta,
+                     double *Y, const vbcsr_blas_int incY);
                      
     void cblas_dgemm(const int Order, const int TransA, const int TransB,
-                     const int M, const int N, const int K,
-                     const double alpha, const double *A, const int lda,
-                     const double *B, const int ldb,
-                     const double beta, double *C, const int ldc);
+                     const vbcsr_blas_int M, const vbcsr_blas_int N, const vbcsr_blas_int K,
+                     const double alpha, const double *A, const vbcsr_blas_int lda,
+                     const double *B, const vbcsr_blas_int ldb,
+                     const double beta, double *C, const vbcsr_blas_int ldc);
                      
     // Complex versions (zgemv, zgemm) usually take void* for alpha/beta/scalars in some implementations
     // or pass by value in others. Standard CBLAS uses void*.
-    void cblas_zgemv(const int Order, const int TransA, const int M, const int N,
-                     const void *alpha, const void *A, const int lda,
-                     const void *X, const int incX, const void *beta,
-                     void *Y, const int incY);
+    void cblas_zgemv(const int Order, const int TransA, const vbcsr_blas_int M, const vbcsr_blas_int N,
+                     const void *alpha, const void *A, const vbcsr_blas_int lda,
+                     const void *X, const vbcsr_blas_int incX, const void *beta,
+                     void *Y, const vbcsr_blas_int incY);
                      
     void cblas_zgemm(const int Order, const int TransA, const int TransB,
-                     const int M, const int N, const int K,
-                     const void *alpha, const void *A, const int lda,
-                     const void *B, const int ldb,
-                     const void *beta, void *C, const int ldc);
+                     const vbcsr_blas_int M, const vbcsr_blas_int N, const vbcsr_blas_int K,
+                     const void *alpha, const void *A, const vbcsr_blas_int lda,
+                     const void *B, const vbcsr_blas_int ldb,
+                     const void *beta, void *C, const vbcsr_blas_int ldc);
 }
 #endif
 
 namespace vbcsr {
 
-#if !defined(VBCSR_USE_MKL) && !defined(VBCSR_USE_OPENBLAS) && !defined(VBCSR_USE_BLAS)
+#if !defined(VBCSR_USE_OPENBLAS) && !defined(VBCSR_USE_BLAS)
 enum CBLAS_ORDER {CblasRowMajor=101, CblasColMajor=102};
 enum CBLAS_TRANSPOSE {CblasNoTrans=111, CblasTrans=112, CblasConjTrans=113};
 #endif
