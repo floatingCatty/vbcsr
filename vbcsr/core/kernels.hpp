@@ -23,7 +23,7 @@ extern "C" void openblas_set_num_threads(int num_threads);
 #endif
 
 #ifdef VBCSR_USE_MKL
-extern "C" void mkl_set_num_threads(int num_threads);
+extern "C" void mkl_set_num_threads_(int* num_threads);
 #endif
 
 // Forward declare CBLAS functions if needed or include header
@@ -475,7 +475,8 @@ struct BLASKernel {
 
     static void init_threading() {
 #ifdef VBCSR_USE_MKL
-        mkl_set_num_threads(1);
+        int one = 1;
+        mkl_set_num_threads_(&one);
 #elif defined(VBCSR_USE_OPENBLAS)
         openblas_set_num_threads(1);
 #else
