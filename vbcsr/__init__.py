@@ -1,3 +1,4 @@
+__version__ = "0.1.0"
 from vbcsr_core import AssemblyMode
 from .vector import DistVector
 from .multivector import DistMultiVector

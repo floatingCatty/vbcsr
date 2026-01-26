@@ -1,0 +1,7 @@
+include LICENSE
+include README.md
+include pyproject.toml
+include CMakeLists.txt
+recursive-include vbcsr *.hpp *.cpp *.h
+recursive-include vbcsr/core *.hpp *.cpp *.h
+recursive-include cmake *.cmake
