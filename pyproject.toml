@@ -38,8 +38,8 @@ logging.level = "INFO"
 
 [tool.cibuildwheel]
 build-verbosity = 1
-# Skip 32-bit builds and musllinux
-skip = ["*-manylinux_i686", "*-musllinux_*"]
+# Skip 32-bit builds, musllinux, and PyPy
+skip = ["*-manylinux_i686", "*-musllinux_*", "pp*"]
 # Use manylinux_2_28 (AlmaLinux 8) to avoid CentOS 7 EOL issues
 manylinux-x86_64-image = "manylinux_2_28"
 
