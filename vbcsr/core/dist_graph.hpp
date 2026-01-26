@@ -70,8 +70,13 @@ public:
 
 public:
     DistGraph(MPI_Comm c = MPI_COMM_WORLD) : comm(c) {
-        MPI_Comm_rank(comm, &rank);
-        MPI_Comm_size(comm, &size);
+        if (comm == MPI_COMM_NULL) {
+            rank = 0;
+            size = 1;
+        } else {
+            MPI_Comm_rank(comm, &rank);
+            MPI_Comm_size(comm, &size);
+        }
     }
 
     ~DistGraph() {
@@ -294,7 +299,11 @@ public:
         // We need to know the global partition to locate owners of ghosts.
         int my_count = n_owned;
         std::vector<int> all_counts(size);
-        MPI_Allgather(&my_count, 1, MPI_INT, all_counts.data(), 1, MPI_INT, comm);
+        if (comm != MPI_COMM_NULL && size > 1) {
+            MPI_Allgather(&my_count, 1, MPI_INT, all_counts.data(), 1, MPI_INT, comm);
+        } else {
+            all_counts[0] = my_count;
+        }
         
         std::vector<int> displ(size + 1, 0);
         for (int i = 0; i < size; ++i) {

@@ -17,28 +17,46 @@ using namespace vbcsr;
 // mpi4py passes MPI_Comm as an integer (on some platforms) or a PyObject.
 // A robust way requires mpi4py headers, but for simplicity we can accept an integer (intptr_t).
 MPI_Comm get_mpi_comm(py::object comm_obj) {
-    // Ensure MPI is initialized
     int initialized;
     MPI_Initialized(&initialized);
-    if (!initialized) {
-        // Initialize with thread support if possible, or just basic
-        // We assume this is a serial fallback or user forgot to init.
-        // If mpi4py is not used, we must init.
-        int provided;
-        MPI_Init_thread(NULL, NULL, MPI_THREAD_MULTIPLE, &provided);
-        // Register finalize? Or let OS handle it?
-        // Ideally we should register a cleanup, but pybind11 module unload is tricky.
-        // For now, we just init.
+
+    if (comm_obj.is_none()) {
+        if (initialized) return MPI_COMM_WORLD;
+        
+        // If not initialized, check if we are in an MPI environment
+        // (e.g., launched via mpirun/mpiexec)
+        bool in_mpi_env = (std::getenv("OMPI_COMM_WORLD_SIZE") != nullptr || 
+                           std::getenv("PMI_SIZE") != nullptr ||
+                           std::getenv("MV2_COMM_WORLD_SIZE") != nullptr);
+        
+        if (in_mpi_env) {
+            int provided;
+            MPI_Init_thread(NULL, NULL, MPI_THREAD_MULTIPLE, &provided);
+            return MPI_COMM_WORLD;
+        } else {
+            // Serial fallback: We don't initialize MPI. 
+            // Note: This assumes the C++ core can handle MPI_COMM_NULL or we use a dummy.
+            // However, most MPI calls will fail if not initialized.
+            // For true serial mode without MPI init, we'd need a non-MPI build or 
+            // a very careful C++ core.
+            // For now, let's at least avoid the crash by NOT calling Init if not in env.
+            return MPI_COMM_NULL; 
+        }
     }
 
-    if (comm_obj.is_none()) return MPI_COMM_WORLD;
+    // If a communicator is provided, we MUST be initialized
+    if (!initialized) {
+        int provided;
+        MPI_Init_thread(NULL, NULL, MPI_THREAD_MULTIPLE, &provided);
+    }
+
     // Try to get 'py2f' method if it's an mpi4py communicator
     if (py::hasattr(comm_obj, "py2f")) {
         MPI_Fint f_handle = (MPI_Fint)comm_obj.attr("py2f")().cast<intptr_t>();
         return MPI_Comm_f2c(f_handle);
     }
-    // Assume it's an integer handle (legacy fallback, maybe also needs f2c if it's a Fortran handle)
-    // Given mpi4py context, it's likely F handle.
+    
+    // Assume it's an integer handle
     MPI_Fint f_handle = (MPI_Fint)comm_obj.cast<intptr_t>();
     return MPI_Comm_f2c(f_handle);
 }

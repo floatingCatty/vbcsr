@@ -207,7 +207,7 @@ class VBCSR(LinearOperator):
         return obj
 
     @classmethod
-    def create_random(cls, global_blocks: int, block_size_min: int, block_size_max: int, density: float = 0.01, dtype: type = np.float64, seed: int = 42, comm: Any = None) -> 'VBCSR':
+    def create_random(cls, global_blocks: int = 100, block_size_min: int = 1, block_size_max: int = 4, density: float = 0.01, dtype: type = np.float64, seed: int = 42, comm: Any = None) -> 'VBCSR':
         """
         Create a random connected VBCSR matrix for benchmarking.
         

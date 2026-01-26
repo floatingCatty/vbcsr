@@ -1,0 +1,57 @@
+{% set name = "vbcsr" %}
+{% set version = "0.1.0" %}
+
+package:
+  name: {{ name|lower }}
+  version: {{ version }}
+
+source:
+  path: ..
+
+build:
+  number: 0
+  script: {{ PYTHON }} -m pip install . --no-deps -vv
+
+requirements:
+  build:
+    - {{ compiler('c') }}
+    - {{ compiler('cxx') }}
+    - cmake
+    - ninja
+    - pkg-config
+  host:
+    - python
+    - pip
+    - scikit-build-core
+    - pybind11
+    - numpy
+    - openmpi
+    - libblas
+    - liblapack
+  run:
+    - python
+    - {{ pin_compatible('numpy') }}
+    - openmpi
+    - mpi4py
+    - scipy
+
+test:
+  imports:
+    - vbcsr
+  commands:
+    - python -m pytest --pyargs vbcsr
+
+about:
+  home: https://github.com/yourusername/vbcsr
+  license: MIT
+  license_file: LICENSE
+  summary: 'Variable Block Compressed Sparse Row (VBCSR) library with MPI support'
+  description: |
+    VBCSR is a high-performance sparse matrix library that supports variable block sizes
+    and distributed memory parallelism via MPI.
+  doc_url: https://github.com/yourusername/vbcsr
+  dev_url: https://github.com/yourusername/vbcsr
+
+extra:
+  recipe-maintainers:
+    - yourusername

@@ -2849,8 +2849,7 @@ public:
 
     // Fetch blocks for a batch of submatrices
     FetchContext fetch_blocks(const std::vector<std::vector<int>>& batch_indices) {
-        int rank;
-        MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+        int rank = graph->rank;
         FetchContext ctx;
         
         // 1. Analyze Requirements
