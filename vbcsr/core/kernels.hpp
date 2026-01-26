@@ -15,22 +15,14 @@ using vbcsr_blas_int = int64_t;
 using vbcsr_blas_int = int;
 #endif
 
-#if defined(VBCSR_USE_OPENBLAS) || defined(VBCSR_USE_BLAS)
-#include <cblas.h>
 #ifdef VBCSR_USE_OPENBLAS
 extern "C" void openblas_set_num_threads(int num_threads);
-#endif
 #endif
 
 #ifdef VBCSR_USE_MKL
 extern "C" void mkl_set_num_threads_(int* num_threads);
 #endif
 
-// Forward declare CBLAS functions if needed or include header
-// For now, we assume a standard CBLAS interface is available via linking
-// or we provide a naive fallback.
-
-#if !defined(VBCSR_USE_OPENBLAS) && !defined(VBCSR_USE_BLAS)
 extern "C" {
     // Basic BLAS signatures
     void cblas_dgemv(const int Order, const int TransA, const vbcsr_blas_int M, const vbcsr_blas_int N,
@@ -57,14 +49,11 @@ extern "C" {
                      const void *B, const vbcsr_blas_int ldb,
                      const void *beta, void *C, const vbcsr_blas_int ldc);
 }
-#endif
 
 namespace vbcsr {
 
-#if !defined(VBCSR_USE_OPENBLAS) && !defined(VBCSR_USE_BLAS)
 enum CBLAS_ORDER {CblasRowMajor=101, CblasColMajor=102};
 enum CBLAS_TRANSPOSE {CblasNoTrans=111, CblasTrans=112, CblasConjTrans=113};
-#endif
 
 // Helper for conjugation
 template <typename T>
