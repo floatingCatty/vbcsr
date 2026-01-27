@@ -1,13 +1,12 @@
 import numpy as np
 import vbcsr
-try:
-    from mpi4py import MPI
-except ImportError:
-    MPI = None
+from vbcsr import VBCSR, MPI, HAS_MPI
 
 def main():
-    comm = MPI.COMM_WORLD if MPI else None
-    if comm and comm.Get_size() > 1:
+    comm = MPI.COMM_WORLD
+    size = comm.Get_size() if HAS_MPI and comm else 1
+    
+    if size > 1:
         print("This example is meant for serial execution (np=1).")
         return
 

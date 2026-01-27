@@ -189,6 +189,8 @@ public:
         }
         
         std::vector<T> global_dots(num_vectors);
+        if (graph->size == 1) return local_dots;
+
         MPI_Datatype type = get_mpi_type();
         MPI_Allreduce(local_dots.data(), global_dots.data(), num_vectors, type, MPI_SUM, graph->comm);
         
@@ -231,6 +233,7 @@ public:
 
     // Sync ghosts for all vectors
     void sync_ghosts() {
+        if (graph->size == 1) return;
         // Similar to DistVector but for multiple columns.
         // We can pack all columns for a block together to minimize latency.
         
@@ -319,6 +322,7 @@ public:
     }
 
     void reduce_ghosts() {
+        if (graph->size == 1) return;
         const auto& block_offsets = graph->block_offsets;
         const auto& send_counts_scalar = graph->send_counts_scalar;
         const auto& recv_counts_scalar = graph->recv_counts_scalar;

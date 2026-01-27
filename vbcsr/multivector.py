@@ -225,6 +225,17 @@ class DistMultiVector:
             return NotImplemented
         return self
 
+    def __radd__(self, other: Union[float, complex, int, np.ndarray]) -> 'DistMultiVector':
+        return self.__add__(other)
+
+    def __rsub__(self, other: Union[float, complex, int, np.ndarray]) -> 'DistMultiVector':
+        res = -self
+        res += other
+        return res
+
+    def __rmul__(self, other: Union[float, complex, int, np.ndarray]) -> 'DistMultiVector':
+        return self.__mul__(other)
+
     def __truediv__(self, other: Union['DistMultiVector', DistVector, float, complex, int, np.ndarray]) -> 'DistMultiVector':
         res = self.duplicate()
         res /= other

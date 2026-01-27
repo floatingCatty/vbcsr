@@ -545,6 +545,12 @@ class VBCSR(LinearOperator):
         obj._global_nnz = None
         return obj
 
+    def get_block_density(self) -> float:
+        return self._core.get_block_density()
+
+    def filter_blocks(self, threshold: float = 0.0):
+        self._core.filter_blocks(threshold)
+
     def add(self, B: 'VBCSR', alpha: float = 1.0, beta: float = 1.0) -> 'VBCSR':
         if not isinstance(B, VBCSR):
             raise TypeError("B must be a VBCSR matrix")

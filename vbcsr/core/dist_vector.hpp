@@ -104,6 +104,8 @@ public:
         #pragma omp parallel for reduction(+:local_dot)
         for (int i = 0; i < local_size; ++i) local_dot += ScalarTraits<T>::conjugate(data[i]) * x[i];
         
+        if (graph->size == 1) return local_dot;
+
         T global_dot;
         allreduce_sum(&local_dot, &global_dot, 1);
         return global_dot;
@@ -160,6 +162,8 @@ public:
     // No recv_buf needed for zero-copy
 
     void sync_ghosts() {
+        if (graph->size == 1) return;
+
         // 1. Pack send buffers
         const auto& block_offsets = graph->block_offsets;
         const auto& send_counts_elems = graph->send_counts_scalar;
@@ -198,6 +202,8 @@ public:
     }
 
     void reduce_ghosts() {
+        if (graph->size == 1) return;
+
         const auto& block_offsets = graph->block_offsets;
         const auto& send_counts_elems = graph->send_counts_scalar;
         const auto& recv_counts_elems = graph->recv_counts_scalar;

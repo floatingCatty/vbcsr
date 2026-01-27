@@ -1,18 +1,18 @@
 import numpy as np
 import vbcsr
-from mpi4py import MPI
+from vbcsr import VBCSR, MPI, HAS_MPI
 
 def main():
     comm = MPI.COMM_WORLD
-    rank = comm.Get_rank()
-    size = comm.Get_size()
+    rank = comm.Get_rank() if HAS_MPI and comm else 0
+    size = comm.Get_size() if HAS_MPI and comm else 1
 
     if rank == 0:
         print(f"Running SpMM example on {size} ranks")
         print("1. Creating random VBCSR matrices A and B...")
 
     # Create random matrix A
-    A = vbcsr.VBCSR.create_random(
+    A = VBCSR.create_random(
         comm=comm,
         global_blocks=10,
         block_size_min=3,
@@ -23,7 +23,7 @@ def main():
     )
 
     # Create random matrix B
-    B = vbcsr.VBCSR.create_random(
+    B = VBCSR.create_random(
         comm=comm,
         global_blocks=10,
         block_size_min=3,
@@ -48,29 +48,17 @@ def main():
     C_dense_vbcsr = C.to_dense()
 
     # Gather full dense matrices on rank 0 for verification
-    # Note: to_dense() returns the LOCAL part. We need to gather them.
-    # For simplicity in this example, we assume serial or small distributed case where we can gather.
-    # But wait, to_dense() returns (owned_rows, global_cols) or (owned_rows, local_cols)?
-    # The doc says (owned_rows, all_local_cols). 
-    # For verification, let's just check local parts if possible, or gather.
-    
-    # Let's gather everything to rank 0
-    # We need to know the global shape and distribution.
-    # A.shape is (N, N).
-    
-    # Gather A
-    A_global = comm.gather(A_dense, root=0)
-    B_global = comm.gather(B_dense, root=0)
-    C_global = comm.gather(C_dense_vbcsr, root=0)
+    if HAS_MPI and comm and size > 1:
+        A_global = comm.gather(A_dense, root=0)
+        B_global = comm.gather(B_dense, root=0)
+        C_global = comm.gather(C_dense_vbcsr, root=0)
+    else:
+        A_global = [A_dense]
+        B_global = [B_dense]
+        C_global = [C_dense_vbcsr]
 
     if rank == 0:
         # Stack the gathered parts
-        # A_dense is (my_rows, global_cols) ? No, to_dense returns local part.
-        # Actually, `to_dense` in `BlockSpMat` returns `(owned_rows, all_local_cols)`.
-        # If the matrix is distributed, `all_local_cols` might be just `global_cols` if it's replicated or fully known?
-        # In `BlockSpMat`, `to_dense` usually returns the full row strip if it's row-distributed.
-        # Let's assume it returns (my_rows, global_cols).
-        
         A_full = np.vstack(A_global)
         B_full = np.vstack(B_global)
         C_full_vbcsr = np.vstack(C_global)
@@ -107,7 +95,10 @@ def main():
         print("5. Verifying MV results...")
         
     y_local = y.to_numpy()
-    y_global = comm.gather(y_local, root=0)
+    if HAS_MPI and comm and size > 1:
+        y_global = comm.gather(y_local, root=0)
+    else:
+        y_global = [y_local]
     
     if rank == 0:
         y_full = np.concatenate(y_global)

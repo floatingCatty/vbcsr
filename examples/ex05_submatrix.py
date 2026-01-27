@@ -1,11 +1,11 @@
 import numpy as np
 import vbcsr
-from mpi4py import MPI
+from vbcsr import VBCSR, MPI, HAS_MPI
 
 def main():
     comm = MPI.COMM_WORLD
-    rank = comm.Get_rank()
-    size = comm.Get_size()
+    rank = comm.Get_rank() if HAS_MPI and comm else 0
+    size = comm.Get_size() if HAS_MPI and comm else 1
 
     if rank == 0:
         print(f"Running on {size} ranks")
@@ -23,7 +23,14 @@ def main():
     )
 
     # Convert original matrix to dense for verification later
-    original_dense = mat.to_dense()
+    # to_dense() returns the local part (owned_rows x global_cols).
+    # In serial mode, this is the full matrix.
+    original_dense_local = mat.to_dense()
+    if HAS_MPI and comm and size > 1:
+        original_dense_parts = comm.gather(original_dense_local, root=0)
+        original_dense = np.vstack(original_dense_parts) if rank == 0 else None
+    else:
+        original_dense = original_dense_local
     
     # Define indices to extract (must be global block indices)
     # Let's extract the first 3 blocks

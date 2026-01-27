@@ -1,11 +1,12 @@
 import numpy as np
 import vbcsr
-from mpi4py import MPI
+from vbcsr import VBCSR, MPI, HAS_MPI
 import scipy.sparse.linalg
 
 def main():
     comm = MPI.COMM_WORLD
-    rank = comm.Get_rank()
+    rank = comm.Get_rank() if HAS_MPI and comm else 0
+    size = comm.Get_size() if HAS_MPI and comm else 1
     
     if rank == 0:
         print("=== Example 3: SciPy Solver Integration ===")
@@ -17,7 +18,7 @@ def main():
     block_sizes = [2, 2]
     adjacency = [[0], [1]] # Diagonal only
     
-    mat = vbcsr.VBCSR.create_serial(comm, global_blocks, block_sizes, adjacency)
+    mat = VBCSR.create_serial(global_blocks, block_sizes, adjacency, comm=comm)
     mat.add_block(0, 0, np.eye(2) * 2.0)
     mat.add_block(1, 1, np.eye(2) * 2.0)
     mat.assemble()
@@ -34,7 +35,7 @@ def main():
     # For distributed solvers, one needs to be careful about dot products.
     # But VBCSR works fine as a standard LinearOperator in serial.
     
-    if comm.Get_size() == 1:
+    if size == 1:
         x, info = scipy.sparse.linalg.cg(mat, b, rtol=1e-5)
         if info == 0:
             print(f"Solver converged. Solution: {x}")

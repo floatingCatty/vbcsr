@@ -199,6 +199,8 @@ void bind_block_spmat(py::module& m, const std::string& name) {
                 vec.data()
             );
         })
+        .def("get_block_density", &BlockSpMat<T>::get_block_density)
+        .def("filter_blocks", &BlockSpMat<T>::filter_blocks)
         .def_property_readonly("local_nnz", [](const BlockSpMat<T>& self) {
             size_t nnz = 0;
             for (size_t s : self.blk_sizes) nnz += s;

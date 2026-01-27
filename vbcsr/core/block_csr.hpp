@@ -3074,7 +3074,7 @@ public:
         }
         
         // 4. Construct Matrix
-        DistGraph* sub_graph = new DistGraph(MPI_COMM_SELF); // this make this method thread safe
+        DistGraph* sub_graph = new DistGraph(this->graph->comm == MPI_COMM_NULL ? MPI_COMM_NULL : MPI_COMM_SELF); // this make this method thread safe
         sub_graph->construct_serial(M, sub_block_sizes, sub_adj);
         
         BlockSpMat<T, Kernel> sub_mat(sub_graph);

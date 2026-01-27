@@ -1,10 +1,11 @@
 import numpy as np
 import vbcsr
-from mpi4py import MPI
+from vbcsr import VBCSR, MPI, HAS_MPI
 
 def main():
     comm = MPI.COMM_WORLD
-    if comm.Get_size() > 1:
+    size = comm.Get_size() if HAS_MPI and comm else 1
+    if size > 1:
         return
 
     print("=== Example 4: Complex Numbers Support ===")
@@ -15,7 +16,7 @@ def main():
     adjacency = [[0]]
     
     # Specify dtype=np.complex128
-    mat = vbcsr.VBCSR.create_serial(comm, global_blocks, block_sizes, adjacency, dtype=np.complex128)
+    mat = VBCSR.create_serial(global_blocks, block_sizes, adjacency, dtype=np.complex128, comm=comm)
     
     # Add complex block
     # [ 1+1j, 0    ]

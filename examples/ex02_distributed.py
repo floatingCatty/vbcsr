@@ -1,11 +1,11 @@
 import numpy as np
 import vbcsr
-from mpi4py import MPI
+from vbcsr import VBCSR, MPI, HAS_MPI
 
 def main():
     comm = MPI.COMM_WORLD
-    rank = comm.Get_rank()
-    size = comm.Get_size()
+    rank = comm.Get_rank() if HAS_MPI and comm else 0
+    size = comm.Get_size() if HAS_MPI and comm else 1
     
     if size < 2:
         print("This example requires at least 2 MPI ranks.")
@@ -27,7 +27,7 @@ def main():
         my_block_sizes = [2]
         my_adj = [[0, 1]] # Block 1 connects to 0 and 1
         
-    mat = vbcsr.VBCSR.create_distributed(comm, owned_indices, my_block_sizes, my_adj)
+    mat = vbcsr.VBCSR.create_distributed(owned_indices, my_block_sizes, my_adj, comm=comm)
     
     # 2. Add blocks
     # Each rank adds blocks it knows about. 

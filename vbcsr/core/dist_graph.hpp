@@ -70,7 +70,9 @@ public:
 
 public:
     DistGraph(MPI_Comm c = MPI_COMM_WORLD) : comm(c) {
-        if (comm == MPI_COMM_NULL) {
+        int initialized = 0;
+        MPI_Initialized(&initialized);
+        if (comm == MPI_COMM_NULL || !initialized) {
             rank = 0;
             size = 1;
         } else {
