@@ -334,6 +334,31 @@ class VBCSR(LinearOperator):
         """
         self._core.add_block(g_row, g_col, data, mode)
 
+    def get_block(self, g_row: int, g_col: int) -> Optional[np.ndarray]:
+        """
+        Get a block from the matrix using global indices.
+        
+        Args:
+            g_row (int): Global row block index.
+            g_col (int): Global column block index.
+            
+        Returns:
+            np.ndarray: The block data, or None if the block is not owned by this rank.
+        """
+        l_row = self.graph.get_local_index(g_row)
+        if l_row == -1 or l_row >= len(self.graph.owned_global_indices):
+            return None
+            
+        l_col = self.graph.get_local_index(g_col)
+        if l_col == -1:
+            return None
+            
+        # Call core get_block with local indices
+        data = self._core.get_block(l_row, l_col)
+        if data.size == 0:
+            return None
+        return data
+
     def assemble(self) -> None:
         """Finalize matrix assembly (exchange remote blocks)."""
         self._core.assemble()
@@ -603,6 +628,29 @@ class VBCSR(LinearOperator):
             raise TypeError("submat must be a VBCSR matrix")
         
         self._core.insert_submatrix(submat._core, global_indices)
+
+    def spmf(self, func_name: str, method: str = "lanczos", verbose: bool = False) -> 'VBCSR':
+        """
+        Compute a matrix function using the graph-based method.
+        
+        Args:
+            func_name (str): Name of the function to compute ("inv", "sqrt", "isqrt", "exp").
+            method (str): Method to use ("lanczos", "dense").
+            verbose (bool): Whether to print verbose output.
+            
+        Returns:
+            VBCSR: The computed matrix function.
+        """
+        core_res = self._core.spmf(func_name, method, verbose)
+        
+        obj = VBCSR.__new__(VBCSR)
+        obj.graph = core_res.graph
+        obj.dtype = self.dtype
+        obj._core = core_res
+        obj.comm = self.comm
+        obj.shape = self.shape
+        obj._global_nnz = None
+        return obj
 
     def to_dense(self) -> np.ndarray:
         """

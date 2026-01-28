@@ -8,6 +8,7 @@
 #include "block_csr.hpp"
 #include "dist_vector.hpp"
 #include "dist_multivector.hpp"
+#include "graphmf.hpp"
 
 namespace py = pybind11;
 using namespace vbcsr;
@@ -84,6 +85,7 @@ void bind_dist_vector(py::module& m, const std::string& name) {
         .def("dot", &DistVector<T>::dot)
         .def("duplicate", &DistVector<T>::duplicate)
         .def("copy_from", &DistVector<T>::copy_from)
+        .def("set_random_normal", &DistVector<T>::set_random_normal)
         .def_property_readonly("local_size", [](const DistVector<T>& v) { return v.local_size; })
         .def_property_readonly("ghost_size", [](const DistVector<T>& v) { return v.ghost_size; })
         .def_property_readonly("full_size", &DistVector<T>::full_size)
@@ -123,6 +125,7 @@ void bind_dist_multivector(py::module& m, const std::string& name) {
             return new_v;
         })
         .def("copy_from", &DistMultiVector<T>::copy_from)
+        .def("set_random_normal", &DistMultiVector<T>::set_random_normal)
         .def_property_readonly("local_rows", [](const DistMultiVector<T>& v) { return v.local_rows; })
         .def_property_readonly("ghost_rows", [](const DistMultiVector<T>& v) { return v.ghost_rows; })
         .def_property_readonly("num_vectors", [](const DistMultiVector<T>& v) { return v.num_vectors; })
@@ -138,6 +141,26 @@ void bind_dist_multivector(py::module& m, const std::string& name) {
                 { sizeof(T), sizeof(T) * (v.local_rows + v.ghost_rows) }          // Strides: (row_stride, col_stride)
             );
         });
+}
+
+template<typename T>
+BlockSpMat<T> py_graph_matrix_function(BlockSpMat<T>& self, const std::string& func_name, const std::string& method, bool verbose) {
+    std::function<T(T)> func;
+    if (func_name == "inv") {
+        func = [](T x) { return T(1.0 / (x + 1e-10)); };
+    } else if (func_name == "sqrt") {
+        func = [](T x) { return T(std::sqrt(x)); };
+    } else if (func_name == "isqrt") {
+        func = [](T x) { return T(1.0 / (std::sqrt(x)+1e-10)); };
+    } else if (func_name == "exp") {
+        func = [](T x) { return T(std::exp(x)); };
+    } else {
+        throw std::runtime_error("Unsupported function: " + func_name);
+    }
+
+    BlockSpMat<T> res = self.duplicate();
+    graph_matrix_function<T>(self, &res, func, method, verbose);
+    return res;
 }
 
 template<typename T>
@@ -255,6 +278,7 @@ void bind_block_spmat(py::module& m, const std::string& name) {
             
             self.from_dense(vec);
         }, py::arg("array"))
+        .def("spmf", &py_graph_matrix_function<T>, py::arg("func_name"), py::arg("method") = "lanczos", py::arg("verbose") = false)
         .def_property_readonly("row_ptr", [](const BlockSpMat<T>& self) {
             return py::array_t<int>(self.row_ptr.size(), self.row_ptr.data());
         })
@@ -282,6 +306,11 @@ PYBIND11_MODULE(vbcsr_core, m) {
         .def("construct_distributed", &DistGraph::construct_distributed)
         .def_readonly("owned_global_indices", &DistGraph::owned_global_indices)
         .def_readonly("block_sizes", &DistGraph::block_sizes)
+        .def("get_local_index", [](const DistGraph& self, int gid) {
+            auto it = self.global_to_local.find(gid);
+            if (it == self.global_to_local.end()) return -1;
+            return it->second;
+        })
         .def_readonly("rank", &DistGraph::rank)
         .def_readonly("size", &DistGraph::size);
 
